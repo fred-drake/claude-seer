@@ -59,6 +59,10 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
             Span::styled("  N          ", Style::default().fg(Color::Yellow)),
             Span::raw("Previous turn"),
         ]),
+        Line::from(vec![
+            Span::styled("  t          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle token display (on by default)"),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "  General",

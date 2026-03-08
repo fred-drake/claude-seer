@@ -65,6 +65,7 @@ pub fn map_key_to_action(key: KeyEvent, show_help: bool, view: &View) -> Option<
         View::Conversation(_) => match key.code {
             KeyCode::Char('j') | KeyCode::Down => Some(Action::NavigateDown),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::NavigateUp),
+            KeyCode::Char('t') => Some(Action::ToggleTokens),
             KeyCode::Char('n') => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     Some(Action::PrevTurn)
@@ -224,6 +225,18 @@ mod tests {
             &conversation_view(),
         );
         assert!(matches!(action, Some(Action::PrevTurn)));
+    }
+
+    #[test]
+    fn t_maps_to_toggle_tokens_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('t')), false, &conversation_view());
+        assert!(matches!(action, Some(Action::ToggleTokens)));
+    }
+
+    #[test]
+    fn t_does_nothing_in_session_list() {
+        let action = map_key_to_action(key(KeyCode::Char('t')), false, &session_list_view());
+        assert!(action.is_none());
     }
 
     #[test]

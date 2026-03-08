@@ -7,7 +7,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::AppState;
-use crate::data::model::{ContentBlock, Session, ToolName, Turn, UserContent};
+use crate::data::model::{
+    ContentBlock, Session, TokenUsage, ToolName, Turn, UserContent, format_tokens,
+};
 
 /// Render the conversation view into the given area.
 pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -15,7 +17,7 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     };
 
-    let lines = build_conversation_lines(session, state.current_turn_index);
+    let lines = build_conversation_lines(session, state.current_turn_index, state.show_tokens);
 
     let total_lines = lines.len();
     let visible_height = area.height as usize;
@@ -28,13 +30,23 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 /// Build all display lines for the conversation.
-fn build_conversation_lines(session: &Session, current_turn_index: usize) -> Vec<Line<'static>> {
+fn build_conversation_lines(
+    session: &Session,
+    current_turn_index: usize,
+    show_tokens: bool,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let total_turns = session.turns.len();
+    let mut cumulative = TokenUsage::default();
 
     for (i, turn) in session.turns.iter().enumerate() {
+        // Accumulate token usage from this turn's response.
+        if let Some(ref response) = turn.assistant_response {
+            cumulative.add(&response.usage);
+        }
+
         let is_current = i == current_turn_index;
-        let turn_lines = build_turn_lines(turn, total_turns, is_current);
+        let turn_lines = build_turn_lines(turn, total_turns, is_current, show_tokens, &cumulative);
         lines.extend(turn_lines);
 
         // Blank line between turns.
@@ -47,7 +59,13 @@ fn build_conversation_lines(session: &Session, current_turn_index: usize) -> Vec
 }
 
 /// Build display lines for a single turn.
-fn build_turn_lines(turn: &Turn, total_turns: usize, is_current: bool) -> Vec<Line<'static>> {
+fn build_turn_lines(
+    turn: &Turn,
+    total_turns: usize,
+    is_current: bool,
+    show_tokens: bool,
+    cumulative: &TokenUsage,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // Turn header.
@@ -116,16 +134,59 @@ fn build_turn_lines(turn: &Turn, total_turns: usize, is_current: bool) -> Vec<Li
             }
         }
 
-        // Token usage for this turn.
-        let usage = &response.usage;
-        if usage.total() > 0 {
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "  tokens: {} in / {} out / {} cache",
-                    usage.input_tokens, usage.output_tokens, usage.cache_read_tokens
-                ),
-                Style::default().fg(Color::DarkGray),
-            )));
+        // Token usage for this turn (when show_tokens is true).
+        if show_tokens {
+            let usage = &response.usage;
+            if usage.total() > 0 {
+                let mut parts = vec![
+                    format!("{} in", format_tokens(usage.input_tokens)),
+                    format!("{} out", format_tokens(usage.output_tokens)),
+                ];
+                if usage.cache_read_tokens > 0 {
+                    parts.push(format!(
+                        "{} cache read",
+                        format_tokens(usage.cache_read_tokens)
+                    ));
+                }
+                if usage.cache_creation_tokens > 0 {
+                    parts.push(format!(
+                        "{} cache write",
+                        format_tokens(usage.cache_creation_tokens)
+                    ));
+                }
+                lines.push(Line::from(Span::styled(
+                    format!("  tokens: {}", parts.join(" / ")),
+                    Style::default().fg(Color::DarkGray),
+                )));
+
+                // Cumulative totals.
+                if cumulative.total() > 0 {
+                    let mut cum_parts = vec![
+                        format!("{} in", format_tokens(cumulative.input_tokens)),
+                        format!("{} out", format_tokens(cumulative.output_tokens)),
+                    ];
+                    if cumulative.cache_read_tokens > 0 {
+                        cum_parts.push(format!(
+                            "{} cache read",
+                            format_tokens(cumulative.cache_read_tokens)
+                        ));
+                    }
+                    if cumulative.cache_creation_tokens > 0 {
+                        cum_parts.push(format!(
+                            "{} cache write",
+                            format_tokens(cumulative.cache_creation_tokens)
+                        ));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  \u{03A3} cumulative: {} ({} total)",
+                            cum_parts.join(" / "),
+                            format_tokens(cumulative.total())
+                        ),
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
         }
     }
 
@@ -343,7 +404,13 @@ mod tests {
     #[test]
     fn build_turn_lines_includes_header() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi there".to_string())]);
-        let lines = build_turn_lines(&turn, 3, true);
+        let cumulative = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 10,
+        };
+        let lines = build_turn_lines(&turn, 3, true, true, &cumulative);
         let header = lines[0].to_string();
         assert!(header.contains("Turn 1/3"));
     }
@@ -351,7 +418,7 @@ mod tests {
     #[test]
     fn build_turn_lines_includes_user_label() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let lines = build_turn_lines(&turn, 1, false);
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
         let has_user = lines.iter().any(|l| l.to_string().contains("User:"));
         assert!(has_user);
     }
@@ -359,7 +426,7 @@ mod tests {
     #[test]
     fn build_turn_lines_includes_assistant_label() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let lines = build_turn_lines(&turn, 1, false);
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
         let has_asst = lines.iter().any(|l| l.to_string().contains("Assistant:"));
         assert!(has_asst);
     }
@@ -373,7 +440,7 @@ mod tests {
                 text: "deep thoughts".to_string(),
             }],
         );
-        let lines = build_turn_lines(&turn, 1, false);
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
         let has_thinking = lines.iter().any(|l| l.to_string().contains("[Thinking]"));
         assert!(has_thinking);
         // Should NOT show the actual thinking text.
@@ -395,7 +462,7 @@ mod tests {
                 result: None,
             })],
         );
-        let lines = build_turn_lines(&turn, 1, false);
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
         let has_tool = lines
             .iter()
             .any(|l| l.to_string().contains("[Read] src/lib.rs"));
@@ -405,7 +472,14 @@ mod tests {
     #[test]
     fn build_turn_lines_shows_token_usage() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let lines = build_turn_lines(&turn, 1, false);
+        // Cumulative should include the turn's own usage in production.
+        let cumulative = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 10,
+        };
+        let lines = build_turn_lines(&turn, 1, false, true, &cumulative);
         let has_tokens = lines
             .iter()
             .any(|l| l.to_string().contains("tokens: 100 in / 50 out"));
@@ -413,10 +487,75 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_lines_zero_token_usage_emits_no_token_lines() {
+        let mut turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        // Override with zero usage.
+        if let Some(ref mut resp) = turn.assistant_response {
+            resp.usage = TokenUsage::default();
+        }
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("tokens:"),
+            "Should not show token line for zero usage, got: {text}"
+        );
+        assert!(
+            !text.contains("cumulative"),
+            "Should not show cumulative for zero usage, got: {text}"
+        );
+    }
+
+    #[test]
+    fn build_conversation_lines_cumulative_accumulation_correctness() {
+        let session = crate::data::model::Session {
+            id: crate::data::model::SessionId("test".to_string()),
+            project: crate::data::model::ProjectPath(std::path::PathBuf::from("test")),
+            file_path: std::path::PathBuf::from("/tmp/test.jsonl"),
+            version: None,
+            git_branch: None,
+            started_at: None,
+            last_activity: None,
+            last_prompt: None,
+            turns: vec![
+                make_turn(0, "first", vec![ContentBlock::Text("r1".to_string())]),
+                make_turn(1, "second", vec![ContentBlock::Text("r2".to_string())]),
+            ],
+            token_totals: TokenUsage::default(),
+            parse_warnings: Vec::new(),
+        };
+
+        let lines = build_conversation_lines(&session, 0, true);
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Each turn has 100 in / 50 out / 10 cache_read.
+        // Turn 2 cumulative should be 200 in / 100 out / 20 cache_read = 320 total.
+        assert!(
+            text.contains("200 in"),
+            "Expected cumulative 200 in, got: {text}"
+        );
+        assert!(
+            text.contains("100 out"),
+            "Expected cumulative 100 out, got: {text}"
+        );
+        assert!(
+            text.contains("320 total"),
+            "Expected cumulative 320 total, got: {text}"
+        );
+    }
+
+    #[test]
     fn build_turn_lines_incomplete_turn_shows_indicator() {
         let mut turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         turn.is_complete = false;
-        let lines = build_turn_lines(&turn, 1, false);
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
         let header = lines[0].to_string();
         assert!(header.contains("(incomplete)"));
     }
@@ -431,7 +570,7 @@ mod tests {
             is_complete: false,
             events: Vec::new(),
         };
-        let lines = build_turn_lines(&turn, 1, false);
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
         // Should have header + user label + user text, but no assistant section.
         let has_asst = lines.iter().any(|l| l.to_string().contains("Assistant:"));
         assert!(!has_asst);
@@ -468,6 +607,70 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_lines_shows_cache_creation_tokens() {
+        let mut turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        if let Some(ref mut resp) = turn.assistant_response {
+            resp.usage.cache_creation_tokens = 200;
+        }
+        let lines = build_turn_lines(&turn, 1, false, true, &TokenUsage::default());
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("cache write"),
+            "Expected cache write display, got: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_hides_tokens_when_show_tokens_false() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let cumulative = TokenUsage {
+            input_tokens: 500,
+            output_tokens: 200,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 50,
+        };
+        let lines = build_turn_lines(&turn, 1, false, false, &cumulative);
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("tokens:"),
+            "Should hide per-turn tokens, got: {text}"
+        );
+        assert!(
+            !text.contains("cumulative"),
+            "Should hide cumulative, got: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_shows_cumulative_tokens() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let cumulative = TokenUsage {
+            input_tokens: 500,
+            output_tokens: 200,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 50,
+        };
+        let lines = build_turn_lines(&turn, 1, false, true, &cumulative);
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("\u{03A3} cumulative: 500 in / 200 out / 50 cache read (750 total)"),
+            "Expected cumulative breakdown, got: {text}"
+        );
+    }
+
+    #[test]
     fn build_conversation_lines_multiple_turns() {
         let session = crate::data::model::Session {
             id: crate::data::model::SessionId("test".to_string()),
@@ -486,7 +689,7 @@ mod tests {
             parse_warnings: Vec::new(),
         };
 
-        let lines = build_conversation_lines(&session, 0);
+        let lines = build_conversation_lines(&session, 0, true);
         let text: String = lines
             .iter()
             .map(|l| l.to_string())

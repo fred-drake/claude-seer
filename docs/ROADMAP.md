@@ -95,7 +95,7 @@ Before Milestone 1 begins, these items must be completed:
 your Claude Code projects and sessions. Select a session to read the full
 conversation — user messages, assistant responses, and tool call names are
 displayed in a scrollable, color-coded view. Each turn shows token usage
-(input, output, cache hit/miss), and a running cumulative total tracks
+(input, output, cache read/write), and a running cumulative total tracks
 spend across the conversation. A help overlay (`?`) lists all keybindings.
 If no Claude Code data exists, you see a helpful guidance message.
 
@@ -265,7 +265,7 @@ an async variant or wrapper.
 | JSONL parser + error types | Done | 0.1.0 |
 | Session discovery + empty states | Done | 0.1.0 |
 | Conversation viewer + turn nav | Done | 0.1.0 |
-| Token usage display | Planned | 0.1.0 |
+| Token usage display | Done | 0.1.0 |
 | Application shell | Planned | 0.1.0 |
 | Tool detail view | Planned | 0.2.0 |
 | Within-session search | Planned | 0.2.0 |
