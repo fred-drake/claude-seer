@@ -38,6 +38,7 @@ pub enum Action {
     SessionLoadError(String),
     LoadError(String),
     ToggleHelp,
+    ToggleTokens,
 }
 
 /// Side effects that the caller must execute.
@@ -55,6 +56,7 @@ pub struct AppState {
     pub sessions: Vec<SessionSummary>,
     pub selected_index: usize,
     pub show_help: bool,
+    pub show_tokens: bool,
     pub terminal_size: (u16, u16),
     pub current_session: Option<Session>,
     pub current_turn_index: usize,
@@ -76,6 +78,7 @@ impl AppState {
             sessions: Vec::new(),
             selected_index: 0,
             show_help: false,
+            show_tokens: true,
             terminal_size: (80, 24),
             current_session: None,
             current_turn_index: 0,
@@ -181,6 +184,11 @@ impl AppState {
 
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
+                None
+            }
+
+            Action::ToggleTokens => {
+                self.show_tokens = !self.show_tokens;
                 None
             }
 
@@ -743,6 +751,24 @@ mod tests {
         let session = make_session("sess-1", 3);
         state.handle_action(Action::SessionLoaded(Box::new(session)));
         assert!(state.last_error.is_none());
+    }
+
+    #[test]
+    fn show_tokens_defaults_to_true() {
+        let state = AppState::new();
+        assert!(state.show_tokens);
+    }
+
+    #[test]
+    fn toggle_tokens_flips_show_tokens() {
+        let mut state = AppState::new();
+        assert!(state.show_tokens);
+        let effect = state.handle_action(Action::ToggleTokens);
+        assert_eq!(effect, None);
+        assert!(!state.show_tokens);
+        let effect = state.handle_action(Action::ToggleTokens);
+        assert_eq!(effect, None);
+        assert!(state.show_tokens);
     }
 
     #[test]

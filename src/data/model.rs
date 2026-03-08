@@ -221,6 +221,36 @@ impl TokenUsage {
     }
 }
 
+/// Format a token count for human-readable display.
+///
+/// - 0 -> "0"
+/// - < 10,000 -> "1,234" (comma-separated)
+/// - >= 10,000 -> "12.3k"
+/// - >= 1,000,000 -> "1.2M"
+pub fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        let whole = n / 1_000_000;
+        let frac = (n % 1_000_000) / 100_000; // first decimal digit
+        if frac == 0 {
+            format!("{whole}M")
+        } else {
+            format!("{whole}.{frac}M")
+        }
+    } else if n >= 10_000 {
+        let whole = n / 1_000;
+        let frac = (n % 1_000) / 100; // first decimal digit
+        if frac == 0 {
+            format!("{whole}k")
+        } else {
+            format!("{whole}.{frac}k")
+        }
+    } else if n >= 1_000 {
+        format!("{},{:03}", n / 1000, n % 1000)
+    } else {
+        n.to_string()
+    }
+}
+
 /// The 7 attribution categories for context window analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenCategory {
@@ -453,6 +483,27 @@ mod tests {
     #[test]
     fn token_usage_total_default_is_zero() {
         assert_eq!(TokenUsage::default().total(), 0);
+    }
+
+    #[rstest]
+    #[case(0, "0")]
+    #[case(1, "1")]
+    #[case(999, "999")]
+    #[case(1_000, "1,000")]
+    #[case(1_234, "1,234")]
+    #[case(9_999, "9,999")]
+    #[case(10_000, "10k")]
+    #[case(12_345, "12.3k")]
+    #[case(12_500, "12.5k")]
+    #[case(99_900, "99.9k")]
+    #[case(100_000, "100k")]
+    #[case(999_900, "999.9k")]
+    #[case(1_000_000, "1M")]
+    #[case(1_200_000, "1.2M")]
+    #[case(1_500_000, "1.5M")]
+    #[case(10_000_000, "10M")]
+    fn format_tokens_cases(#[case] input: u64, #[case] expected: &str) {
+        assert_eq!(format_tokens(input), expected);
     }
 
     #[test]
