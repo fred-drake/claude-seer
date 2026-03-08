@@ -459,7 +459,7 @@ mod tests {
         // proj-a has 2 sessions, proj-b has 1
         let proj_a = groups
             .iter()
-            .find(|(p, _)| p.0 == PathBuf::from("proj-a"))
+            .find(|(p, _)| p.0.as_os_str() == "proj-a")
             .unwrap();
         assert_eq!(proj_a.1.len(), 2);
     }
