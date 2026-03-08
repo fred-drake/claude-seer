@@ -279,3 +279,31 @@ an async variant or wrapper.
 | Custom notifications | Planned | 0.5.0 |
 | SSH remote access | Planned | 0.5.0 |
 | Data export | Planned | 0.5.0 |
+
+## Future Considerations
+
+Non-blocking notes from the M1 prerequisite review. These are not
+assigned to a specific milestone yet but should be addressed as the
+relevant features are implemented.
+
+- **Incomplete turn navigation**: `n`/`N` turn navigation should always
+  land on incomplete turns (don't skip them). They represent real user
+  interactions and hiding them would be confusing.
+- **Sidechain visibility indicator**: When a tool call is a subagent
+  spawn with `isSidechain: true`, display it as
+  `[Agent] (sidechain hidden)` in the conversation view. Low-cost since
+  `ToolName::Agent` already exists. Sets user expectations for v0.5.
+- **`tool_summary()` helper**: Each tool type needs a one-line summary
+  for inline display (e.g., `[Read] src/main.rs (42 lines)`,
+  `[Bash] cargo test → exit 0`). Place in the TUI layer, not data/.
+- **`parse_warnings` on Session**: Store a `Vec<ParseWarning>` on
+  `Session` for display in the TUI status bar (e.g., "3 orphaned
+  records skipped").
+- **Log file security**: Default log path `/tmp/claude-seer.log` is
+  world-readable. Consider using `$XDG_STATE_HOME` or document the
+  security implication in `--help` output.
+- **CLI env var in help**: `CLAUDE_SEER_PATH` and `CLAUDE_SEER_LOG_FILE`
+  env vars should appear in `--help` output via clap's `env` attribute.
+- **Future CLI flags**: `--session <UUID>` (open directly),
+  `--project <PATH>` (filter to project), `--no-color` (disable
+  colors). Not needed for v0.1.
