@@ -261,8 +261,8 @@ an async variant or wrapper.
 | Feature | Status | Version |
 |---------|--------|---------|
 | Project scaffold | Done | 0.1.0 |
-| Turn assembly state machine | Pre-req | 0.1.0 |
-| JSONL parser + error types | Planned | 0.1.0 |
+| Turn assembly state machine | Done | 0.1.0 |
+| JSONL parser + error types | Done | 0.1.0 |
 | Session discovery + empty states | Planned | 0.1.0 |
 | Conversation viewer + turn nav | Planned | 0.1.0 |
 | Token usage display | Planned | 0.1.0 |
@@ -307,3 +307,21 @@ relevant features are implemented.
 - **Future CLI flags**: `--session <UUID>` (open directly),
   `--project <PATH>` (filter to project), `--no-color` (disable
   colors). Not needed for v0.1.
+- **`extract_token_usage` direct tests**: Add dedicated unit tests
+  for the happy path and missing-usage fallback of
+  `extract_token_usage`.
+- **`merge_assistant_responses` accumulation test**: Test that token
+  usage is accumulated across multiple assistant responses within one
+  turn and that `stop_reason` comes from the last response.
+- **`ToolResult.is_error` test coverage**: Add test fixture and test
+  for `is_error: true` tool results.
+- **`extract_user_content` fallback test**: Test the fallback case
+  where content is neither string nor array.
+- **Smarter project path decoding**: The current `decoded_path()` is
+  lossy -- dashes in real directory names (e.g., `fred-drake`,
+  `github.com`) get converted to path separators. Consider
+  filesystem-based path resolution or showing the raw encoded name
+  with a visual indicator.
+- **TUI rendering note**: Use `ProjectPath::decoded_path()` not the
+  `Display` trait when rendering project paths in widgets. `Display`
+  shows the raw encoded directory name.
