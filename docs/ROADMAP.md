@@ -263,7 +263,7 @@ an async variant or wrapper.
 | Project scaffold | Done | 0.1.0 |
 | Turn assembly state machine | Done | 0.1.0 |
 | JSONL parser + error types | Done | 0.1.0 |
-| Session discovery + empty states | Planned | 0.1.0 |
+| Session discovery + empty states | Done | 0.1.0 |
 | Conversation viewer + turn nav | Planned | 0.1.0 |
 | Token usage display | Planned | 0.1.0 |
 | Application shell | Planned | 0.1.0 |
