@@ -1,0 +1,6 @@
+{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/home/user/project","sessionId":"sess-err-001","version":"2.1.71","gitBranch":"main","type":"user","message":{"role":"user","content":"Test error handling"},"uuid":"err-001","timestamp":"2026-03-08T10:00:00.000Z","permissionMode":"bypassPermissions"}
+this is not valid json at all
+{"truncated json with no closing brace
+{"parentUuid":"err-001","isSidechain":false,"userType":"external","cwd":"/home/user/project","sessionId":"sess-err-001","version":"2.1.71","gitBranch":"main","message":{"model":"claude-opus-4-6","id":"msg_err_resp","type":"message","role":"assistant","content":[{"type":"text","text":"Here is a valid response after bad lines."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":15,"service_tier":"standard"}},"type":"assistant","uuid":"err-002","timestamp":"2026-03-08T10:00:02.000Z"}
+
+{"parentUuid":"err-002","isSidechain":false,"userType":"external","cwd":"/home/user/project","sessionId":"sess-err-001","version":"2.1.71","gitBranch":"main","type":"user","message":{"role":"user","content":"Another valid message after empty line"},"uuid":"err-003","timestamp":"2026-03-08T10:00:05.000Z","permissionMode":"bypassPermissions"}

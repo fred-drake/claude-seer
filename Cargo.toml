@@ -11,11 +11,16 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[features]
+dhat-heap = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 dhat = "0.3"
 divan = "0.1"
+insta = "1"
 rstest = "0.23"
+tempfile = "3"
 
 [[bench]]
 name = "benchmarks"

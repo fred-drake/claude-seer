@@ -1,0 +1,281 @@
+# Claude Seer - Product Roadmap
+
+Last Updated: 2026-03-08 | Version: 0.1.0-planning (post-review)
+
+## Vision
+
+Claude Seer is a TUI application that lets developers visualize and
+explore their Claude Code session data directly in the terminal. It reads
+the JSONL session logs that Claude Code writes to `~/.claude/projects/`
+and presents them through an interactive, keyboard-driven interface.
+
+The reference product is [claude-devtools](https://github.com/matt1398/claude-devtools),
+a desktop/web application. Claude Seer brings the same insights to the
+terminal, where Claude Code developers already work.
+
+## Architecture
+
+- **Stack**: Rust + ratatui + crossterm + thiserror + miette + tracing
+- **Data source**: JSONL files in `~/.claude/projects/`
+- **Testing**: TDD-first, cargo-nextest, rstest, criterion/divan benchmarks
+- **Profiling**: cargo-flamegraph, samply, dhat
+- **Detailed design**: See [DATA_FLOW.md](./DATA_FLOW.md)
+
+### Module Layout
+
+| Module | Purpose | TUI dependency? |
+|--------|---------|-----------------|
+| `data/` | Domain types, JSONL parser, search, analysis | No |
+| `source/` | DataSource trait + filesystem impl | No |
+| `app.rs` | State machine, action handling | No |
+| `tui/` | Terminal, event loop, widgets | Yes |
+| `main.rs` | Entry point, CLI, wiring | Yes |
+
+### Key Design Decisions
+
+1. **Turn-based model**: Raw JSONL is flat, but we reconstruct
+   user/assistant turn pairs during parsing. All navigation
+   and analysis operates on turns.
+2. **Explicit side effects**: `AppState::handle_action()` is pure.
+   I/O requests are returned as `SideEffect` values for the caller.
+3. **DataSource trait**: Abstracts filesystem access for testability.
+4. **Two-pass parsing**: Summary scan for the session list (fast),
+   full parse only when a session is opened.
+5. **std::thread + mpsc**: No async runtime. Background I/O sends
+   results through channels to keep the TUI responsive.
+
+## JSONL Data Format
+
+Each session is a `.jsonl` file named by session UUID. Records have these
+`type` values:
+
+| Type | Description |
+|------|-------------|
+| `user` | User messages (text, tool results) |
+| `assistant` | Assistant messages (text, thinking, tool_use) |
+| `progress` | Hook progress, bash progress, agent progress |
+| `system` | Hook summaries, turn durations |
+| `file-history-snapshot` | File state snapshots |
+| `last-prompt` | Last user prompt in session |
+| `queue-operation` | Queue operations |
+
+Key fields per record: `sessionId`, `uuid`, `parentUuid`, `timestamp`,
+`cwd`, `gitBranch`, `version`, `isSidechain`.
+
+Assistant messages contain `message.usage` with token counts:
+`input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+`cache_read_input_tokens`.
+
+Assistant content blocks have types: `text`, `thinking`, `tool_use`.
+Tool use blocks contain `name` and `input` fields.
+
+## Pre-Implementation Prerequisites
+
+Before Milestone 1 begins, these items must be completed:
+
+1. **Turn assembly state machine diagram** — Formal state diagram for
+   `TurnAssemblerState` covering: normal user/assistant pairs, tool result
+   interleaving, progress record attachment, orphaned messages, sidechain
+   conversations, and incomplete turns. This is a spec, not post-hoc docs.
+2. **Add `serde` and `serde_json` to Cargo.toml** — Required for all
+   parsing work.
+3. **Create missing test fixtures** — `session_linear.jsonl`,
+   `session_sidechain.jsonl`, `session_resumed.jsonl`,
+   `session_orphaned_progress.jsonl`, `session_mid_toolcall.jsonl`,
+   `session_consecutive_users.jsonl`, `session_mismatched_toolresult.jsonl`.
+4. **Reconcile module naming** — TESTING_STRATEGY.md must match the
+   canonical module layout in DATA_FLOW.md.
+5. **Define CLI args** — At minimum: `--path`, `--help`, `--version`.
+
+## Release Plan
+
+### v0.1 - MVP: Session Browser + Conversation Viewer
+
+**What you can do:** Launch `claude-seer` in your terminal and browse all
+your Claude Code projects and sessions. Select a session to read the full
+conversation — user messages, assistant responses, and tool call names are
+displayed in a scrollable, color-coded view. Each turn shows token usage
+(input, output, cache hit/miss), and a running cumulative total tracks
+spend across the conversation. A help overlay (`?`) lists all keybindings.
+If no Claude Code data exists, you see a helpful guidance message.
+
+**How it works in practice:** You open a terminal, run `claude-seer`, and
+see a two-panel layout. The left panel lists your projects (decoded from
+`~/.claude/projects/` directory names) with sessions nested beneath, sorted
+by most recent. Each session shows its date/time, message count, branch
+name, and first prompt as a title preview. You navigate with `j`/`k`,
+press `Enter` to open a session, and the right panel fills with the
+conversation. You scroll through messages, jump between turns with `n`/`N`,
+and see token counts alongside each assistant response. Press `q` to back
+out or quit. Use `--path /custom/path` for non-standard installs.
+
+**Milestones:**
+1. JSONL parser library — data layer with error type skeletons
+   (`DataError`, `SourceError` via thiserror), no TUI. Turn assembly
+   state machine handles edge cases (sidechains skipped in v0.1,
+   progress records attached to nearest turn, orphaned messages warned
+   and skipped).
+2. Session discovery and listing — includes empty state handling:
+   - No `~/.claude/` directory: full-screen guidance message
+   - Directory exists, no sessions: "(empty)" with guidance
+   - Session loading: "Loading session..." text
+   - Empty session (0 turns): "Session contains no conversation turns"
+3. Conversation viewer with message display and turn navigation
+   (`n`/`N` to jump turns — MUST-HAVE, not optional)
+4. Token usage display (per-turn and cumulative)
+5. Application shell (navigation, help overlay, logging to file)
+
+**What is NOT in v0.1:**
+- No tool call detail views — you see tool names (e.g. `[Read]`, `[Bash]`)
+  but cannot inspect inputs, outputs, or diffs
+- No syntax highlighting of code within messages
+- No search — you browse and scroll only
+- No token attribution by category — you see raw totals, not a breakdown
+  of what contributed to the context window
+- No compaction detection — token drops between turns are not flagged
+- No subagent/team visualization — subagent tool calls appear as regular
+  tool calls without tree structure
+- No SSH remote access — local `~/.claude/` only
+- No user-facing error diagnostics (miette) — errors are logged, not
+  displayed with rich context
+
+---
+
+### v0.2 - Tool Inspector + Search
+
+**What you can do:** Inspect any tool call in detail. In the conversation
+view, tool calls show a one-line summary (e.g. `[Read] src/main.rs (42
+lines)` or `[Bash] cargo test → exit 0`). Press `Enter` on a tool call
+and the content pane is replaced with the tool's detail view — full input
+and output with independent scrolling. Press `Esc` to return to the
+conversation at your previous scroll position. This follows the same
+Enter=drill-in / Esc=back-out pattern used throughout the app.
+Within-session search (`/`) lets you find text in the current conversation.
+Tool calls with no result (session ended mid-tool-use) show the tool input
+with `(no output captured)`.
+
+**How it works in practice:** While reading a conversation, you see
+one-line tool call summaries inline. Press `Enter` on `[Read] src/main.rs`
+and the content pane is replaced with the full file contents and line
+numbers. For `Edit` calls, you see the old and new text. For `Bash` calls,
+you see the command and its output. Press `Esc` to return to the
+conversation exactly where you left off. Press `/` to search within the
+session — matches are highlighted and you can jump between them with
+`n`/`N`. Multi-line inline previews may be added in a future release if
+users request them.
+
+**What is NOT in v0.2:**
+- No syntax highlighting in tool detail views — plain text only
+- No token attribution by category
+- No compaction detection
+- No cross-session search
+- No side-by-side session comparison
+- No subagent tree views
+- No custom notifications or alerts
+- No SSH remote access
+
+---
+
+### v0.3 - Token Attribution + Compaction
+
+**What you can do:** See where your tokens are being spent. Each turn's
+context is broken down by category — system prompt, CLAUDE.md files, user
+text, tool I/O, thinking blocks — with color-coded attribution. Compaction
+events (where Claude Code silently compresses conversation history) are
+detected and visualized with before/after token deltas, so you can see
+when and how much context was lost. Tool detail views now include syntax
+highlighting for code.
+
+**How it works in practice:** Toggle the token view with `t` to see
+attribution bars alongside each turn, color-coded by category. You can
+immediately spot which turns consumed the most context on tool output vs
+thinking vs user text. Compaction markers appear in the conversation where
+context was compressed, showing the token delta. Tool detail views now
+render code with syntax highlighting.
+
+**What is NOT in v0.3:**
+- No cross-session search
+- No side-by-side session comparison
+- No project-level aggregate statistics
+- No subagent tree views
+- No custom notifications or alerts
+- No SSH remote access
+- No data export
+
+---
+
+### v0.4 - Cross-Session Analysis
+
+**What you can do:** Search across all sessions in a project (or globally)
+using a command palette (`Ctrl-k`). Results show matching lines with context
+snippets and you can jump directly to the matching message. Compare two
+sessions side-by-side in a split view — useful for comparing different
+approaches to the same problem or reviewing how a session evolved. See
+project-level aggregate statistics: total tokens spent, session count,
+average session length, most active time periods.
+
+**How it works in practice:** Press `Ctrl-k` to open the command palette,
+type a regex pattern, and results stream in (with debouncing) from all
+sessions in the current project. Select a result to jump directly to that
+message in context. To compare sessions, mark two sessions in the list
+with `m` and press `c` to open them side-by-side (requires 120+ column
+terminal; narrower terminals show a synced-scroll single-pane fallback).
+The project view header shows aggregate stats.
+
+**What is NOT in v0.4:**
+- No subagent/team tree visualization
+- No custom notification triggers
+- No SSH remote access
+- No data export or reporting
+
+---
+
+### v0.5 - Advanced Features
+
+**What you can do:** Visualize subagent and team execution as expandable
+trees — see which agents were spawned, what tasks they were given, and how
+they relate to the parent conversation. Each subagent node shows its own
+metrics (tokens, duration, tool calls). Define custom notification triggers
+using regex patterns — flag sessions where `.env` files were accessed,
+payment-related paths were touched, or token usage exceeded a threshold.
+Connect to remote machines via SSH to browse session logs from other
+development environments. Export session data or analysis results for
+external use.
+
+**How it works in practice:** When viewing a session that spawned subagents,
+a tree view shows the full execution hierarchy. You can expand any node to
+see its conversation, or collapse it to see just the summary metrics. A
+notification panel (toggled with `n`) shows triggered alerts across sessions.
+To monitor a remote machine, press `r` to open the SSH connection dialog,
+select a configured host from `~/.ssh/config`, and browse remote sessions
+as if they were local. Export a session summary to JSON or plain text with
+`:export`.
+
+**Note:** SSH support introduces the tokio async runtime. The channel-based
+event architecture is forward-compatible — async results feed through the
+same `mpsc::channel` as thread-based I/O. The `DataSource` trait may need
+an async variant or wrapper.
+
+## Feature Status
+
+| Feature | Status | Version |
+|---------|--------|---------|
+| Project scaffold | Done | 0.1.0 |
+| Turn assembly state machine | Pre-req | 0.1.0 |
+| JSONL parser + error types | Planned | 0.1.0 |
+| Session discovery + empty states | Planned | 0.1.0 |
+| Conversation viewer + turn nav | Planned | 0.1.0 |
+| Token usage display | Planned | 0.1.0 |
+| Application shell | Planned | 0.1.0 |
+| Tool detail view | Planned | 0.2.0 |
+| Within-session search | Planned | 0.2.0 |
+| Token attribution (7 categories) | Planned | 0.3.0 |
+| Compaction detection | Planned | 0.3.0 |
+| Syntax highlighting | Planned | 0.3.0 |
+| Cross-session search | Planned | 0.4.0 |
+| Session comparison | Planned | 0.4.0 |
+| Project aggregate stats | Planned | 0.4.0 |
+| Subagent tree visualization | Planned | 0.5.0 |
+| Custom notifications | Planned | 0.5.0 |
+| SSH remote access | Planned | 0.5.0 |
+| Data export | Planned | 0.5.0 |
