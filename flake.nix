@@ -37,6 +37,9 @@
             cargo-flamegraph
             cargo-tarpaulin
 
+            # JSON processing
+            jq
+
             # GitHub CLI
             gh
 

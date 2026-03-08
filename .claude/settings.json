@@ -1,0 +1,15 @@
+{
+"hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty'); if [[ \"$FILE\" == *.rs ]]; then cd \"$PROJECT_DIR\" && cargo check 2>&1; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
