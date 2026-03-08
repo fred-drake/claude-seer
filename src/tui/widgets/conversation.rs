@@ -17,12 +17,16 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     };
 
-    let lines = build_conversation_lines(session, state.current_turn_index, state.show_tokens);
+    let (lines, current_turn_start) =
+        build_conversation_lines(session, state.current_turn_index, state.show_tokens);
 
     let total_lines = lines.len();
     let visible_height = area.height as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
-    let clamped_scroll = state.scroll_offset.min(max_scroll);
+    // Use current turn's start line as scroll base so n/N navigation
+    // (which resets scroll_offset to 0) shows the selected turn at top.
+    let effective_scroll = current_turn_start.saturating_add(state.scroll_offset);
+    let clamped_scroll = effective_scroll.min(max_scroll);
 
     let paragraph = Paragraph::new(lines).scroll((clamped_scroll as u16, 0));
 
@@ -30,19 +34,27 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 /// Build all display lines for the conversation.
+///
+/// Returns `(lines, current_turn_start_line)` where `current_turn_start_line`
+/// is the index into `lines` where the current turn's header begins.
 fn build_conversation_lines(
     session: &Session,
     current_turn_index: usize,
     show_tokens: bool,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let total_turns = session.turns.len();
     let mut cumulative = TokenUsage::default();
+    let mut current_turn_start_line: usize = 0;
 
     for (i, turn) in session.turns.iter().enumerate() {
         // Accumulate token usage from this turn's response.
         if let Some(ref response) = turn.assistant_response {
             cumulative.add(&response.usage);
+        }
+
+        if i == current_turn_index {
+            current_turn_start_line = lines.len();
         }
 
         let is_current = i == current_turn_index;
@@ -55,7 +67,7 @@ fn build_conversation_lines(
         }
     }
 
-    lines
+    (lines, current_turn_start_line)
 }
 
 /// Build display lines for a single turn.
@@ -528,7 +540,7 @@ mod tests {
             parse_warnings: Vec::new(),
         };
 
-        let lines = build_conversation_lines(&session, 0, true);
+        let (lines, _) = build_conversation_lines(&session, 0, true);
         let text: String = lines
             .iter()
             .map(|l| l.to_string())
@@ -671,6 +683,68 @@ mod tests {
     }
 
     #[test]
+    fn build_conversation_lines_returns_current_turn_start_line() {
+        let session = crate::data::model::Session {
+            id: crate::data::model::SessionId("test".to_string()),
+            project: crate::data::model::ProjectPath(std::path::PathBuf::from("test")),
+            file_path: std::path::PathBuf::from("/tmp/test.jsonl"),
+            version: None,
+            git_branch: None,
+            started_at: None,
+            last_activity: None,
+            last_prompt: None,
+            turns: vec![
+                make_turn(0, "first", vec![ContentBlock::Text("reply 1".to_string())]),
+                make_turn(1, "second", vec![ContentBlock::Text("reply 2".to_string())]),
+                make_turn(2, "third", vec![ContentBlock::Text("reply 3".to_string())]),
+            ],
+            token_totals: TokenUsage::default(),
+            parse_warnings: Vec::new(),
+        };
+
+        // Current turn = 0 should start at line 0.
+        let (_, start_line_0) = build_conversation_lines(&session, 0, false);
+        assert_eq!(start_line_0, 0);
+
+        // Current turn = 1 should start after turn 0's lines + blank separator.
+        let (_lines_t0, _) = build_conversation_lines(&session, 0, false);
+        let turn_0_lines =
+            build_turn_lines(&session.turns[0], 3, true, false, &TokenUsage::default());
+        // Turn 0 lines + 1 blank separator = start of turn 1.
+        let expected_start_1 = turn_0_lines.len() + 1;
+        let (_, start_line_1) = build_conversation_lines(&session, 1, false);
+        assert_eq!(start_line_1, expected_start_1);
+
+        // Current turn = 2 should start after turns 0 and 1 + separators.
+        let (_, start_line_2) = build_conversation_lines(&session, 2, false);
+        assert!(start_line_2 > start_line_1);
+    }
+
+    #[test]
+    fn build_conversation_lines_single_turn_start_is_zero() {
+        let session = crate::data::model::Session {
+            id: crate::data::model::SessionId("test".to_string()),
+            project: crate::data::model::ProjectPath(std::path::PathBuf::from("test")),
+            file_path: std::path::PathBuf::from("/tmp/test.jsonl"),
+            version: None,
+            git_branch: None,
+            started_at: None,
+            last_activity: None,
+            last_prompt: None,
+            turns: vec![make_turn(
+                0,
+                "only",
+                vec![ContentBlock::Text("reply".to_string())],
+            )],
+            token_totals: TokenUsage::default(),
+            parse_warnings: Vec::new(),
+        };
+
+        let (_, start_line) = build_conversation_lines(&session, 0, false);
+        assert_eq!(start_line, 0);
+    }
+
+    #[test]
     fn build_conversation_lines_multiple_turns() {
         let session = crate::data::model::Session {
             id: crate::data::model::SessionId("test".to_string()),
@@ -689,7 +763,7 @@ mod tests {
             parse_warnings: Vec::new(),
         };
 
-        let lines = build_conversation_lines(&session, 0, true);
+        let (lines, _) = build_conversation_lines(&session, 0, true);
         let text: String = lines
             .iter()
             .map(|l| l.to_string())
