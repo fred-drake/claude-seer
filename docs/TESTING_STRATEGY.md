@@ -15,30 +15,45 @@ organized into layers that can be tested independently.
 
 ```
 src/
-  main.rs          -- entry point, wires everything together
-  lib.rs           -- re-exports for integration tests and benches
-  parser/          -- JSONL parsing, deserialization
-    mod.rs
-    models.rs      -- data structures (Session, Message, ToolUse, etc.)
-    jsonl.rs       -- line-by-line JSONL reader
-  scanner/         -- filesystem discovery of session files
-    mod.rs
-  search/          -- filtering and full-text search across sessions
-    mod.rs
-  tokens/          -- token counting and cost calculation
-    mod.rs
-  app/             -- application state machine (no terminal dependency)
-    mod.rs
-    state.rs       -- AppState enum, transitions
-    actions.rs     -- user action handlers
-  ui/              -- ratatui widgets and rendering (thin layer)
-    mod.rs
-    views/         -- individual screen renderers
+  main.rs                  -- entry point: CLI args, terminal setup, run loop
+  lib.rs                   -- re-exports public API for integration tests
+  app.rs                   -- application state machine (no TUI deps)
+  config.rs                -- CLI args, config file, paths
+
+  data/
+    mod.rs                 -- re-exports
+    model.rs               -- core domain types (Session, Turn, Message, etc.)
+    parser.rs              -- JSONL line parsing into raw records
+    session_loader.rs      -- loads/indexes session files from disk
+    token_attribution.rs   -- token categorization (7 categories)
+    compaction.rs          -- compaction event detection
+    search.rs              -- full-text and regex search across sessions
+    error.rs               -- DataError (thiserror)
+
+  source/
+    mod.rs                 -- re-exports, DataSource trait
+    filesystem.rs          -- local filesystem impl of DataSource
+    error.rs               -- SourceError (thiserror)
+
+  tui/
+    mod.rs                 -- re-exports, terminal setup/teardown
+    event.rs               -- event loop: crossterm events + app channels
+    ui.rs                  -- root layout dispatcher
+    widgets/
+      mod.rs
+      session_list.rs      -- session browser pane
+      conversation.rs      -- message/turn viewer pane
+      token_chart.rs       -- token usage visualization
+      tool_detail.rs       -- tool call inspector
+      status_bar.rs        -- status bar / command palette
+      help.rs              -- help overlay
+    error.rs               -- TuiError (thiserror)
 ```
 
-The `app/` layer owns all state transitions and is fully testable with
-unit tests. The `ui/` layer is a thin mapping from AppState to ratatui
-widgets, testable via `TestBackend` and snapshot tests.
+`app.rs` owns all state transitions and is fully testable with unit
+tests. The `tui/` layer is a thin mapping from AppState to ratatui
+widgets, testable via `TestBackend` and snapshot tests. `data/` and
+`source/` have zero TUI dependencies and are pure library code.
 
 ---
 
@@ -95,17 +110,19 @@ fn parse_message_type(#[case] input: &str, #[case] expected: MessageType) {
 
 ### What gets unit tested
 
-| Module        | What to test                                    | Edge cases                                          |
-|---------------|-------------------------------------------------|-----------------------------------------------------|
-| `parser`      | Deserialize each JSONL `type` variant            | Malformed JSON, unknown type, missing fields,        |
-|               |                                                 | truncated lines, empty lines, BOM markers            |
-| `models`      | Data model accessors, derived traits             | Empty content, very large token counts, null uuids   |
-| `scanner`     | Find .jsonl files under ~/.claude/projects/      | Empty dirs, nested dirs, symlinks, permission errors |
-| `search`      | Keyword matching, filtering by date/model/branch | Empty query, regex special chars, unicode,           |
-|               |                                                 | case insensitivity, no matches                       |
-| `tokens`      | Token aggregation, cost calculation              | Zero tokens, overflow-large values, missing usage    |
-| `app/state`   | State machine transitions                        | Invalid transitions, repeated key presses            |
-| `app/actions` | Action handlers mutate state correctly           | Actions in wrong state, empty session list            |
+| Module                     | What to test                                    | Edge cases                                          |
+|----------------------------|-------------------------------------------------|-----------------------------------------------------|
+| `data/parser`              | Deserialize each JSONL `type` variant            | Malformed JSON, unknown type, missing fields,        |
+|                            |                                                 | truncated lines, empty lines, BOM markers            |
+| `data/model`               | Data model accessors, derived traits             | Empty content, very large token counts, null uuids   |
+| `data/session_loader`      | Turn assembly, two-pass parsing                 | Incomplete turns, orphaned messages, sidechains      |
+| `data/search`              | Keyword matching, filtering by date/model/branch | Empty query, regex special chars, unicode,           |
+|                            |                                                 | case insensitivity, no matches                       |
+| `data/token_attribution`   | Token aggregation, category breakdown            | Zero tokens, overflow-large values, missing usage    |
+| `data/compaction`          | Compaction event detection                       | No compaction, gradual growth, exact threshold       |
+| `source/filesystem`        | Find .jsonl files under ~/.claude/projects/      | Empty dirs, nested dirs, symlinks, permission errors |
+| `app` (state machine)      | State machine transitions                        | Invalid transitions, repeated key presses            |
+| `app` (action handlers)    | Action handlers mutate state correctly           | Actions in wrong state, empty session list            |
 
 ### Testing error paths
 
@@ -324,14 +341,18 @@ approaches 2 and 3 until there are real terminal-specific bugs to chase.
 ```
 tests/
   fixtures/
-    session_basic.jsonl       -- minimal valid session (user + assistant)
-    session_multi_turn.jsonl  -- 5+ turn conversation with tool use
-    session_with_errors.jsonl -- includes malformed lines mixed in
-    session_large.jsonl       -- 1000+ lines for performance testing
-    session_sidechain.jsonl   -- entries with isSidechain: true
-    session_empty.jsonl       -- empty file
-    session_bom.jsonl         -- file starting with UTF-8 BOM
-    claude_home/              -- mock ~/.claude/ directory structure
+    session_basic.jsonl                -- minimal valid session (user + assistant)
+    session_multi_turn.jsonl           -- multi-turn conversation with tool use
+    session_linear.jsonl               -- simple 3-turn, no tool use
+    session_sidechain.jsonl            -- records with isSidechain: true
+    session_resumed.jsonl              -- resumed session (timestamp gap, cwd change)
+    session_orphaned_progress.jsonl    -- progress records without active turn
+    session_mid_toolcall.jsonl         -- session ends with pending tool_use
+    session_consecutive_users.jsonl    -- two user messages without assistant between
+    session_mismatched_toolresult.jsonl -- tool_result with non-existent tool_use_id
+    session_with_errors.jsonl          -- includes malformed lines mixed in
+    session_empty.jsonl                -- empty file
+    claude_home/                       -- mock ~/.claude/ directory structure
       projects/
         my-project/
           session-1.jsonl
@@ -359,17 +380,18 @@ Use `CLAUDE_HOME` env var to override the session directory path.
 
 ## 5. Coverage Targets
 
-| Module          | Target  | Rationale                                       |
-|-----------------|---------|-------------------------------------------------|
-| `parser`        | >= 95%  | Core correctness, many edge cases               |
-| `models`        | >= 90%  | Data structures, mostly derived                 |
-| `scanner`       | >= 85%  | Filesystem interactions, harder to cover all OS  |
-| `search`        | >= 90%  | User-facing feature, must handle bad input      |
-| `tokens`        | >= 95%  | Financial calculation, must be exact             |
-| `app/state`     | >= 95%  | State machine must be exhaustively tested        |
-| `app/actions`   | >= 90%  | Action handlers, all paths                      |
-| `ui/`           | >= 60%  | Thin rendering layer, covered by snapshots       |
-| **Overall**     | >= 85%  |                                                  |
+| Module                   | Target  | Rationale                                       |
+|--------------------------|---------|-------------------------------------------------|
+| `data/parser`            | >= 95%  | Core correctness, many edge cases               |
+| `data/model`             | >= 90%  | Data structures, mostly derived                 |
+| `data/session_loader`    | >= 95%  | Turn assembly is critical logic                 |
+| `data/search`            | >= 90%  | User-facing feature, must handle bad input      |
+| `data/token_attribution` | >= 95%  | Financial calculation, must be exact             |
+| `data/compaction`        | >= 95%  | Heuristic detection, edge cases matter          |
+| `source/filesystem`      | >= 85%  | Filesystem interactions, harder to cover all OS  |
+| `app`                    | >= 95%  | State machine must be exhaustively tested        |
+| `tui/`                   | >= 60%  | Thin rendering layer, covered by snapshots       |
+| **Overall**              | >= 85%  |                                                  |
 
 Run coverage: `cargo tarpaulin --out html --output-dir target/tarpaulin`
 
@@ -383,7 +405,7 @@ Located in `benches/benchmarks.rs`. Run with `cargo bench`.
 
 ```rust
 use criterion::{Criterion, criterion_group, criterion_main, BenchmarkId};
-use claude_seer::parser::parse_session_file;
+use claude_seer::data::parser::parse_session_file;
 use std::path::PathBuf;
 
 fn bench_parse_session(c: &mut Criterion) {
@@ -420,7 +442,7 @@ Located in `benches/divan_benchmarks.rs`. Run with
 `cargo bench --bench divan_benchmarks`.
 
 ```rust
-use claude_seer::parser::parse_jsonl_line;
+use claude_seer::data::parser::parse_jsonl_line;
 
 #[divan::bench]
 fn parse_user_message(bencher: divan::Bencher) {

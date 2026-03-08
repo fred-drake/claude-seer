@@ -114,6 +114,7 @@ pub struct Session {
     pub last_prompt: Option<String>,
     pub turns: Vec<Turn>,
     pub token_totals: TokenUsage,
+    pub parse_warnings: Vec<ParseWarning>,
 }
 
 /// A turn is one user message + one assistant response.
@@ -122,8 +123,14 @@ pub struct Session {
 pub struct Turn {
     pub index: usize,
     pub user_message: UserMessage,
-    pub assistant_response: AssistantResponse,
+    pub assistant_response: Option<AssistantResponse>,
+    /// Populated by correlating `system` records containing
+    /// `turn_duration` with their parent turn during pass 2.
+    /// The turn assembler skips `system` records, but the
+    /// session loader post-processes them to fill this field.
     pub duration: Option<std::time::Duration>,
+    pub is_complete: bool,
+    pub events: Vec<SessionEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -537,6 +544,13 @@ Read only the first line (for session start time), the last line
 (for last activity), and any `last-prompt` line. This gives enough
 metadata for the session list without parsing every record.
 
+Note: `last_prompt` extraction happens entirely in pass 1. The turn
+assembler does NOT process `last-prompt` records — they are filtered
+out before reaching the assembler. The `SessionSummary.last_prompt`
+field is populated during the summary scan. When a full session is
+loaded in pass 2, the caller copies `SessionSummary.last_prompt` into
+`Session.last_prompt` — pass 2 does not re-extract it.
+
 **Pass 2 - Full parse** (`parser.rs`):
 When a user opens a session, parse every line into `RawRecord`,
 then assemble into `Turn` objects. This is where tool results
@@ -591,7 +605,10 @@ pub fn detect_compactions(turns: &[Turn]) -> Vec<CompactionEvent> {
     let mut prev_total = 0u64;
 
     for (i, turn) in turns.iter().enumerate() {
-        let usage = &turn.assistant_response.usage;
+        let Some(ref response) = turn.assistant_response else {
+            continue;
+        };
+        let usage = &response.usage;
         let total = usage.input_tokens
             + usage.cache_read_tokens
             + usage.cache_creation_tokens;
@@ -602,7 +619,7 @@ pub fn detect_compactions(turns: &[Turn]) -> Vec<CompactionEvent> {
                 turn_index: i,
                 tokens_before: prev_total,
                 tokens_after: total,
-                timestamp: turn.assistant_response.timestamp,
+                timestamp: response.timestamp,
             });
         }
         prev_total = total;
@@ -675,4 +692,67 @@ hand-crafted minimal scenarios.
 6. Thread sends AppEvent::SearchComplete(hits)
 7. app.set_search_results(hits)
 8. TUI renders search results with highlighted matches
+```
+
+## CLI Arguments (config.rs)
+
+Argument parsing uses `clap` with the derive API. The CLI struct lives
+in `src/config.rs` and is parsed in `main.rs` before any other setup.
+
+```rust
+use clap::Parser;
+use std::path::PathBuf;
+
+/// claude-seer: TUI for visualizing Claude Code session data
+#[derive(Parser, Debug)]
+#[command(name = "claude-seer", version, about)]
+pub struct Cli {
+    /// Path to the Claude projects directory
+    /// [default: ~/.claude/projects/]
+    #[arg(long, short = 'p')]
+    pub path: Option<PathBuf>,
+
+    /// Path to the log file for tracing output
+    /// [default: /tmp/claude-seer.log]
+    #[arg(long)]
+    pub log_file: Option<PathBuf>,
+}
+```
+
+### Arguments
+
+| Argument | Short | Type | Default | Description |
+|---|---|---|---|---|
+| `--path <PATH>` | `-p` | `PathBuf` | `~/.claude/projects/` | Override the session data directory |
+| `--log-file <PATH>` | — | `PathBuf` | `/tmp/claude-seer.log` | Override the tracing log file location |
+| `--help` | `-h` | flag | — | Display help text (provided by clap) |
+| `--version` | `-V` | flag | — | Display version (provided by clap) |
+
+### Resolution Order
+
+Configuration values are resolved in this order (later wins):
+
+1. Compiled defaults (`~/.claude/projects/`, `/tmp/claude-seer.log`)
+2. Environment variables (`CLAUDE_SEER_PATH`, `CLAUDE_SEER_LOG_FILE`)
+3. CLI arguments (`--path`, `--log-file`)
+
+### Usage in main.rs
+
+```rust
+fn main() -> miette::Result<()> {
+    let cli = Cli::parse();
+
+    let projects_path = cli.path.unwrap_or_else(|| {
+        dirs::home_dir()
+            .expect("could not determine home directory")
+            .join(".claude/projects")
+    });
+
+    let log_file = cli.log_file.unwrap_or_else(|| {
+        PathBuf::from("/tmp/claude-seer.log")
+    });
+
+    // ... setup tracing to log_file, create FilesystemSource
+    // with projects_path, etc.
+}
 ```
