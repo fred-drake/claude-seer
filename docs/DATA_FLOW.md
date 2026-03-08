@@ -10,7 +10,6 @@ claude-seer/
     main.rs                  -- Entry point: CLI args, terminal setup, run loop
     lib.rs                   -- Re-exports public API for integration tests
     app.rs                   -- Application state machine (no TUI deps)
-    config.rs                -- CLI args, config file, paths
 
     data/
       mod.rs                 -- Re-exports
@@ -344,73 +343,64 @@ the filesystem.
 
 ## Application State Machine (app.rs)
 
+As implemented in M2, the state machine handles session discovery,
+navigation, and empty state management. Future milestones will add
+conversation viewing (M3), token display (M4), and search (M5).
+
 ```rust
-/// All possible user actions. The TUI translates key events into these.
-/// app.rs handles them with pure logic (no I/O side effects).
+/// All possible user/system actions.
 pub enum Action {
     Quit,
     NavigateUp,
     NavigateDown,
-    SelectSession(SessionId),
+    SelectSession,           // Uses selected_index
     BackToList,
-    NextTurn,
-    PrevTurn,
-    ToggleTokenDetail,
-    OpenToolDetail(usize),
-    StartSearch(String),
-    NextSearchResult,
     Resize(u16, u16),
+    SessionsLoaded(Vec<SessionSummary>),  // Background result
+    LoadError(String),                     // Background error
+    ToggleHelp,
+    // Future: NextTurn, PrevTurn, StartSearch, etc.
 }
 
 /// The view the TUI should render.
 pub enum View {
     SessionList,
     Conversation(SessionId),
-    ToolDetail { session: SessionId, turn: usize, block: usize },
-    Search,
+    // Future: ToolDetail, Search
+}
+
+/// Empty state conditions for display.
+pub enum EmptyState {
+    NoDirectory,    // No ~/.claude/ directory
+    NoSessions,     // Directory exists, no sessions
+    Loading,        // Session list loading
+    EmptySession,   // Selected session has 0 turns
+}
+
+/// Side effects that the caller must execute.
+pub enum SideEffect {
+    Exit,
+    LoadSessionList,
+    LoadSession(SessionId),
+    // Future: PerformSearch(SearchQuery)
 }
 
 pub struct AppState {
     pub view: View,
+    pub empty_state: Option<EmptyState>,
     pub sessions: Vec<SessionSummary>,
-    pub selected_session_index: usize,
-    pub current_session: Option<Session>,
-    pub selected_turn: usize,
-    pub scroll_offset: usize,
-    pub search_results: Vec<SearchHit>,
+    pub selected_index: usize,
+    pub show_help: bool,
     pub terminal_size: (u16, u16),
-    // ... additional view-specific state
-}
-
-impl AppState {
-    /// Pure function: takes an action, returns what side effects
-    /// (if any) the caller should perform.
-    pub fn handle_action(&mut self, action: Action) -> Option<SideEffect> {
-        match action {
-            Action::SelectSession(id) => Some(SideEffect::LoadSession(id)),
-            Action::Quit => Some(SideEffect::Exit),
-            // Navigation actions mutate state directly, no side effects
-            Action::NextTurn => {
-                if let Some(session) = &self.current_session {
-                    if self.selected_turn < session.turns.len() - 1 {
-                        self.selected_turn += 1;
-                    }
-                }
-                None
-            }
-            // ...
-        }
-    }
-}
-
-/// Side effects that main.rs / the event loop must perform.
-/// AppState never does I/O itself.
-pub enum SideEffect {
-    Exit,
-    LoadSession(SessionId),
-    PerformSearch(SearchQuery),
 }
 ```
+
+Key behaviors:
+- Sessions are sorted by `last_activity` descending (most recent first)
+- `grouped_sessions()` groups by `ProjectPath` for display
+- `BackToList` from `SessionList` view triggers `Exit`
+- `SessionsLoaded` with empty vec sets `NoSessions` empty state
+- `LoadError` sets `NoDirectory` empty state
 
 ### Why Side Effects Are Explicit
 
@@ -427,12 +417,12 @@ it produces new state + optional side effect. This means:
 pub enum AppEvent {
     /// Crossterm terminal event (key press, resize, etc.)
     Terminal(crossterm::event::Event),
-    /// Session loaded in background, ready for display
-    SessionLoaded(Result<Session, SourceError>),
-    /// Search results arrived
-    SearchComplete(Vec<SearchHit>),
+    /// Session list loaded in background.
+    SessionsLoaded(Result<Vec<SessionSummary>, SourceError>),
     /// Tick for any periodic updates (optional)
     Tick,
+    // Future: SessionLoaded(Result<Session, SourceError>),
+    // Future: SearchComplete(Vec<SearchHit>),
 }
 ```
 
@@ -670,8 +660,8 @@ hand-crafted minimal scenarios.
 
 ```
 1. User presses Enter on session list
-2. tui/event.rs maps KeyCode::Enter -> Action::SelectSession(id)
-3. app.handle_action() returns SideEffect::LoadSession(id)
+2. tui/event.rs maps KeyCode::Enter -> Action::SelectSession
+3. app.handle_action() returns SideEffect::LoadSession(id) using selected_index
 4. Main loop spawns std::thread to call data_source.load_session(id)
 5. Thread parses JSONL -> Vec<RawRecord>
 6. Thread assembles RawRecord stream into Session with Turns
@@ -694,10 +684,10 @@ hand-crafted minimal scenarios.
 8. TUI renders search results with highlighted matches
 ```
 
-## CLI Arguments (config.rs)
+## CLI Arguments (main.rs)
 
 Argument parsing uses `clap` with the derive API. The CLI struct lives
-in `src/config.rs` and is parsed in `main.rs` before any other setup.
+in `src/main.rs` and is parsed before any other setup.
 
 ```rust
 use clap::Parser;
@@ -733,8 +723,7 @@ pub struct Cli {
 Configuration values are resolved in this order (later wins):
 
 1. Compiled defaults (`~/.claude/projects/`, `/tmp/claude-seer.log`)
-2. Environment variables (`CLAUDE_SEER_PATH`, `CLAUDE_SEER_LOG_FILE`)
-3. CLI arguments (`--path`, `--log-file`)
+2. CLI arguments (`--path`, `--log-file`)
 
 ### Usage in main.rs
 
@@ -742,17 +731,32 @@ Configuration values are resolved in this order (later wins):
 fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
-    let projects_path = cli.path.unwrap_or_else(|| {
-        dirs::home_dir()
-            .expect("could not determine home directory")
-            .join(".claude/projects")
-    });
+    let projects_path = match cli.path {
+        Some(path) => path,
+        None => dirs::home_dir()
+            .ok_or_else(|| miette::miette!("could not determine home directory"))?
+            .join(".claude/projects"),
+    };
 
-    let log_file = cli.log_file.unwrap_or_else(|| {
-        PathBuf::from("/tmp/claude-seer.log")
-    });
+    let log_file_path = cli.log_file
+        .unwrap_or_else(|| PathBuf::from("/tmp/claude-seer.log"));
 
-    // ... setup tracing to log_file, create FilesystemSource
-    // with projects_path, etc.
+    // Initialize tracing — write to log file if possible,
+    // fall back to stderr.
+    match std::fs::File::create(&log_file_path) {
+        Ok(file) => {
+            tracing_subscriber::fmt()
+                .with_writer(file)
+                .with_ansi(false)
+                .init();
+        }
+        Err(_) => {
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .init();
+        }
+    }
+
+    // ... create FilesystemSource with projects_path, etc.
 }
 ```
