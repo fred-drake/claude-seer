@@ -1,0 +1,34 @@
+[package]
+name = "claude-seer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.28"
+miette = { version = "7", features = ["fancy"] }
+ratatui = "0.29"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+dhat = "0.3"
+divan = "0.1"
+rstest = "0.23"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[bench]]
+name = "divan_benchmarks"
+harness = false
+
+[profile.flamegraph]
+inherits = "release"
+debug = true
+
+[profile.dhat]
+inherits = "release"
+debug = 1
