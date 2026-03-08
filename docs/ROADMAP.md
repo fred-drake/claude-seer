@@ -347,3 +347,14 @@ relevant features are implemented.
   output with invalidation on turn change/scroll.
 - **Status bar parse_warnings**: Display `parse_warnings.len()` in
   the status bar when viewing a session (e.g., "3 warnings").
+- **`build_turn_lines` parameter count**: Now has 5 parameters
+  (`turn`, `total_turns`, `is_current`, `show_tokens`, `cumulative`).
+  Consider an options struct if more display flags are added (e.g.,
+  `show_thinking`, `show_tool_details` in v0.2+).
+- **Status bar truncation at narrow terminals**: The conversation
+  status bar (~75 chars) clips ungracefully at <80 columns. Consider
+  progressive disclosure of keybinding hints based on terminal width.
+- **Cumulative token category breakdown**: The cumulative line shows
+  in/out/cache totals. A per-category attribution breakdown
+  (system prompt, tool I/O, thinking, etc.) fits v0.3 token
+  attribution milestone.
