@@ -1,3 +1,4 @@
+pub mod conversation;
 pub mod empty_state;
 pub mod help;
 pub mod layout;

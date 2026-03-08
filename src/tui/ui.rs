@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 
 use crate::app::{AppState, View};
-use crate::tui::widgets::{empty_state, help, session_list, status_bar};
+use crate::tui::widgets::{conversation, empty_state, help, session_list, status_bar};
 
 /// Render the entire UI based on current app state.
 pub fn render(frame: &mut Frame, state: &AppState) {
@@ -30,9 +30,10 @@ pub fn render(frame: &mut Frame, state: &AppState) {
             }
         }
         View::Conversation(_session_id) => {
-            // Placeholder -- will be implemented in M3.
             if let Some(ref empty) = state.empty_state {
                 empty_state::render_empty_state(frame, content_area, empty);
+            } else {
+                conversation::render_conversation(frame, content_area, state);
             }
         }
     }

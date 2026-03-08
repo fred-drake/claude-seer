@@ -107,7 +107,7 @@ fn main() -> miette::Result<()> {
             AppEvent::Terminal(Event::Key(key)) => {
                 // Only handle key press events (not release/repeat).
                 if key.kind == KeyEventKind::Press {
-                    map_key_to_action(key, app.show_help)
+                    map_key_to_action(key, app.show_help, &app.view)
                 } else {
                     None
                 }
@@ -116,6 +116,8 @@ fn main() -> miette::Result<()> {
             AppEvent::Terminal(_) => None,
             AppEvent::SessionsLoaded(Ok(summaries)) => Some(Action::SessionsLoaded(summaries)),
             AppEvent::SessionsLoaded(Err(err)) => Some(Action::LoadError(err.to_string())),
+            AppEvent::SessionLoaded(Ok(session)) => Some(Action::SessionLoaded(Box::new(session))),
+            AppEvent::SessionLoaded(Err(err)) => Some(Action::SessionLoadError(err.to_string())),
             AppEvent::Tick => None,
         };
 
@@ -126,8 +128,14 @@ fn main() -> miette::Result<()> {
             // Execute side effects.
             match effect {
                 Some(SideEffect::Exit) => break,
-                Some(SideEffect::LoadSession(_id)) => {
-                    // Will be implemented in M3 (conversation viewer).
+                Some(SideEffect::LoadSession(id)) => {
+                    let tx = tx.clone();
+                    let path = projects_path.clone();
+                    std::thread::spawn(move || {
+                        let source = FilesystemSource::new(path);
+                        let result = source.load_session(&id);
+                        let _ = tx.send(AppEvent::SessionLoaded(result));
+                    });
                 }
                 Some(SideEffect::LoadSessionList) => {
                     let tx = tx.clone();

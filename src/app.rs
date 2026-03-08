@@ -1,6 +1,6 @@
 // Application state machine -- pure logic, no TUI dependencies.
 
-use crate::data::model::{ProjectPath, SessionId, SessionSummary};
+use crate::data::model::{ProjectPath, Session, SessionId, SessionSummary};
 
 /// The view the TUI should render.
 #[derive(Debug, PartialEq, Eq)]
@@ -30,8 +30,12 @@ pub enum Action {
     NavigateDown,
     SelectSession,
     BackToList,
+    NextTurn,
+    PrevTurn,
     Resize(u16, u16),
     SessionsLoaded(Vec<SessionSummary>),
+    SessionLoaded(Box<Session>),
+    SessionLoadError(String),
     LoadError(String),
     ToggleHelp,
 }
@@ -52,6 +56,10 @@ pub struct AppState {
     pub selected_index: usize,
     pub show_help: bool,
     pub terminal_size: (u16, u16),
+    pub current_session: Option<Session>,
+    pub current_turn_index: usize,
+    pub scroll_offset: usize,
+    pub last_error: Option<String>,
 }
 
 impl Default for AppState {
@@ -69,6 +77,10 @@ impl AppState {
             selected_index: 0,
             show_help: false,
             terminal_size: (80, 24),
+            current_session: None,
+            current_turn_index: 0,
+            scroll_offset: 0,
+            last_error: None,
         }
     }
 
@@ -112,30 +124,42 @@ impl AppState {
                 None
             }
 
-            Action::NavigateDown => {
-                if !self.sessions.is_empty() && self.selected_index < self.sessions.len() - 1 {
-                    self.selected_index += 1;
+            Action::NavigateDown => match &self.view {
+                View::SessionList => {
+                    if !self.sessions.is_empty() && self.selected_index < self.sessions.len() - 1 {
+                        self.selected_index += 1;
+                    }
+                    None
                 }
-                None
-            }
+                View::Conversation(_) => {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                    None
+                }
+            },
 
-            Action::NavigateUp => {
-                if !self.sessions.is_empty() && self.selected_index > 0 {
-                    self.selected_index -= 1;
+            Action::NavigateUp => match &self.view {
+                View::SessionList => {
+                    if !self.sessions.is_empty() && self.selected_index > 0 {
+                        self.selected_index -= 1;
+                    }
+                    None
                 }
-                None
-            }
+                View::Conversation(_) => {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    None
+                }
+            },
 
             Action::SelectSession => {
                 if self.sessions.is_empty() {
                     return None;
                 }
                 let id = self.sessions[self.selected_index].id.clone();
-                // TODO(M3): Transition to View::Conversation(id) when session
-                // data arrives via a SessionLoaded event. Don't transition here
-                // because the conversation data hasn't been loaded yet — we'd
-                // show an empty view. The LoadSession side effect is currently
-                // a no-op stub in main.rs.
+                self.view = View::Conversation(id.clone());
+                self.empty_state = Some(EmptyState::Loading);
+                self.current_session = None;
+                self.current_turn_index = 0;
+                self.scroll_offset = 0;
                 Some(SideEffect::LoadSession(id))
             }
 
@@ -143,12 +167,59 @@ impl AppState {
                 View::SessionList => Some(SideEffect::Exit),
                 View::Conversation(_) => {
                     self.view = View::SessionList;
+                    self.current_session = None;
+                    self.current_turn_index = 0;
+                    self.scroll_offset = 0;
+                    self.empty_state = if self.sessions.is_empty() {
+                        Some(EmptyState::NoSessions)
+                    } else {
+                        None
+                    };
                     None
                 }
             },
 
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
+                None
+            }
+
+            Action::SessionLoaded(session) => {
+                self.view = View::Conversation(session.id.clone());
+                self.empty_state = if session.turns.is_empty() {
+                    Some(EmptyState::EmptySession)
+                } else {
+                    None
+                };
+                self.current_session = Some(*session);
+                self.current_turn_index = 0;
+                self.scroll_offset = 0;
+                self.last_error = None;
+                None
+            }
+
+            Action::SessionLoadError(msg) => {
+                self.view = View::SessionList;
+                self.last_error = Some(msg);
+                None
+            }
+
+            Action::NextTurn => {
+                if let Some(ref session) = self.current_session
+                    && !session.turns.is_empty()
+                    && self.current_turn_index < session.turns.len() - 1
+                {
+                    self.current_turn_index += 1;
+                    self.scroll_offset = 0;
+                }
+                None
+            }
+
+            Action::PrevTurn => {
+                if self.current_session.is_some() && self.current_turn_index > 0 {
+                    self.current_turn_index -= 1;
+                    self.scroll_offset = 0;
+                }
                 None
             }
 
@@ -181,6 +252,40 @@ mod tests {
         let mut state = AppState::new();
         let effect = state.handle_action(Action::Quit);
         assert_eq!(effect, Some(SideEffect::Exit));
+    }
+
+    fn make_session(id: &str, turn_count: usize) -> Session {
+        use crate::data::model::{MessageId, TokenUsage, Turn, UserContent, UserMessage};
+        use std::path::PathBuf;
+
+        let turns: Vec<Turn> = (0..turn_count)
+            .map(|i| Turn {
+                index: i,
+                user_message: UserMessage {
+                    id: MessageId(format!("msg-user-{i}")),
+                    timestamp: chrono::Utc::now(),
+                    content: UserContent::Text(format!("User message {i}")),
+                },
+                assistant_response: None,
+                duration: None,
+                is_complete: true,
+                events: Vec::new(),
+            })
+            .collect();
+
+        Session {
+            id: SessionId(id.to_string()),
+            project: ProjectPath(PathBuf::from("test-project")),
+            file_path: PathBuf::from(format!("/tmp/{id}.jsonl")),
+            version: Some("2.1.71".to_string()),
+            git_branch: Some("main".to_string()),
+            started_at: None,
+            last_activity: None,
+            last_prompt: Some("test prompt".to_string()),
+            turns,
+            token_totals: TokenUsage::default(),
+            parse_warnings: Vec::new(),
+        }
     }
 
     fn make_summaries(count: usize) -> Vec<SessionSummary> {
@@ -407,6 +512,251 @@ mod tests {
         // Most recent should be first.
         assert_eq!(state.sessions[0].id, SessionId("new".to_string()));
         assert_eq!(state.sessions[1].id, SessionId("old".to_string()));
+    }
+
+    #[test]
+    fn session_loaded_stores_session_and_transitions_to_conversation() {
+        let mut state = AppState::new();
+        state.handle_action(Action::SessionsLoaded(make_summaries(3)));
+        let session = make_session("sess-1", 3);
+        let effect = state.handle_action(Action::SessionLoaded(Box::new(session)));
+        assert!(effect.is_none());
+        assert_eq!(
+            state.view,
+            View::Conversation(SessionId("sess-1".to_string()))
+        );
+        assert!(state.current_session.is_some());
+        assert_eq!(state.current_turn_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn session_loaded_empty_session_sets_empty_state() {
+        let mut state = AppState::new();
+        let session = make_session("sess-empty", 0);
+        let effect = state.handle_action(Action::SessionLoaded(Box::new(session)));
+        assert!(effect.is_none());
+        assert_eq!(
+            state.view,
+            View::Conversation(SessionId("sess-empty".to_string()))
+        );
+        assert_eq!(state.empty_state, Some(EmptyState::EmptySession));
+        assert!(state.current_session.is_some());
+    }
+
+    #[test]
+    fn session_load_error_returns_to_session_list() {
+        let mut state = AppState::new();
+        state.view = View::Conversation(SessionId("sess-1".to_string()));
+        let effect = state.handle_action(Action::SessionLoadError("not found".to_string()));
+        assert!(effect.is_none());
+        assert_eq!(state.view, View::SessionList);
+    }
+
+    #[test]
+    fn next_turn_increments_index() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 5);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        assert_eq!(state.current_turn_index, 0);
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 1);
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 2);
+    }
+
+    #[test]
+    fn next_turn_stops_at_last() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 2);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 1);
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 1); // stays at last
+    }
+
+    #[test]
+    fn prev_turn_decrements_index() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 5);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.handle_action(Action::NextTurn);
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 2);
+        state.handle_action(Action::PrevTurn);
+        assert_eq!(state.current_turn_index, 1);
+    }
+
+    #[test]
+    fn prev_turn_stops_at_first() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.handle_action(Action::PrevTurn);
+        assert_eq!(state.current_turn_index, 0);
+    }
+
+    #[test]
+    fn next_turn_resets_scroll_offset() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.scroll_offset = 5;
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn navigate_down_in_conversation_scrolls() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        assert_eq!(state.scroll_offset, 0);
+        state.handle_action(Action::NavigateDown);
+        assert_eq!(state.scroll_offset, 1);
+        state.handle_action(Action::NavigateDown);
+        assert_eq!(state.scroll_offset, 2);
+    }
+
+    #[test]
+    fn navigate_up_in_conversation_scrolls() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.scroll_offset = 5;
+        state.handle_action(Action::NavigateUp);
+        assert_eq!(state.scroll_offset, 4);
+    }
+
+    #[test]
+    fn navigate_up_in_conversation_stops_at_zero() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.handle_action(Action::NavigateUp);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn back_to_list_from_conversation_clears_session() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.current_turn_index = 2;
+        state.scroll_offset = 5;
+        state.handle_action(Action::BackToList);
+        assert_eq!(state.view, View::SessionList);
+        assert!(state.current_session.is_none());
+        assert_eq!(state.current_turn_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn next_turn_without_session_does_nothing() {
+        let mut state = AppState::new();
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 0);
+    }
+
+    #[test]
+    fn prev_turn_without_session_does_nothing() {
+        let mut state = AppState::new();
+        state.handle_action(Action::PrevTurn);
+        assert_eq!(state.current_turn_index, 0);
+    }
+
+    #[test]
+    fn prev_turn_resets_scroll_offset() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.handle_action(Action::NextTurn);
+        state.scroll_offset = 5;
+        state.handle_action(Action::PrevTurn);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn next_turn_on_empty_session_does_nothing() {
+        let mut state = AppState::new();
+        let session = make_session("sess-empty", 0);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        assert_eq!(state.current_turn_index, 0);
+        state.handle_action(Action::NextTurn);
+        assert_eq!(state.current_turn_index, 0);
+    }
+
+    #[test]
+    fn select_session_clears_conversation_state() {
+        let mut state = AppState::new();
+        state.handle_action(Action::SessionsLoaded(make_summaries(3)));
+        // Load a session first to set conversation state.
+        let session = make_session("sess-1", 5);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.current_turn_index = 3;
+        state.scroll_offset = 10;
+        // Now select a different session.
+        state.view = View::SessionList;
+        state.handle_action(Action::SelectSession);
+        assert!(state.current_session.is_none());
+        assert_eq!(state.current_turn_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn back_to_list_recomputes_empty_state() {
+        let mut state = AppState::new();
+        // Start with no sessions loaded.
+        state.handle_action(Action::SessionsLoaded(Vec::new()));
+        assert_eq!(state.empty_state, Some(EmptyState::NoSessions));
+        // Simulate entering a conversation (even though sessions are empty,
+        // test the logic path).
+        state.view = View::Conversation(SessionId("test".to_string()));
+        state.handle_action(Action::BackToList);
+        // Should recompute: sessions is empty, so NoSessions.
+        assert_eq!(state.empty_state, Some(EmptyState::NoSessions));
+    }
+
+    #[test]
+    fn back_to_list_recomputes_empty_state_with_sessions() {
+        let mut state = AppState::new();
+        state.handle_action(Action::SessionsLoaded(make_summaries(3)));
+        state.view = View::Conversation(SessionId("test".to_string()));
+        state.handle_action(Action::BackToList);
+        // Sessions exist, so empty_state should be None.
+        assert_eq!(state.empty_state, None);
+    }
+
+    #[test]
+    fn session_load_error_stores_last_error() {
+        let mut state = AppState::new();
+        state.view = View::Conversation(SessionId("sess-1".to_string()));
+        state.handle_action(Action::SessionLoadError("file not found".to_string()));
+        assert_eq!(state.last_error, Some("file not found".to_string()));
+    }
+
+    #[test]
+    fn session_loaded_clears_last_error() {
+        let mut state = AppState::new();
+        state.last_error = Some("previous error".to_string());
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        assert!(state.last_error.is_none());
+    }
+
+    #[test]
+    fn select_session_sets_loading_state() {
+        let mut state = AppState::new();
+        state.handle_action(Action::SessionsLoaded(make_summaries(3)));
+        state.handle_action(Action::SelectSession);
+        // After SelectSession, the view should transition to Conversation
+        // with a Loading empty state while the session loads.
+        assert_eq!(
+            state.view,
+            View::Conversation(SessionId("session-0".to_string()))
+        );
+        assert_eq!(state.empty_state, Some(EmptyState::Loading));
     }
 
     #[test]

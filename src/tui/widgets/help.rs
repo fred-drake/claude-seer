@@ -11,7 +11,7 @@ use super::layout::centered_rect;
 /// Render the help overlay centered on screen.
 pub fn render_help(frame: &mut Frame, area: Rect) {
     let help_width = 50u16.min(area.width.saturating_sub(4));
-    let help_height = 15u16.min(area.height.saturating_sub(4));
+    let help_height = 24u16.min(area.height.saturating_sub(4));
 
     let popup_area = centered_rect(help_width, help_height, area);
 
@@ -26,13 +26,17 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
+        Line::from(Span::styled(
+            "  Navigation",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  j / Down   ", Style::default().fg(Color::Yellow)),
-            Span::raw("Move down"),
+            Span::raw("Move down / Scroll down"),
         ]),
         Line::from(vec![
             Span::styled("  k / Up     ", Style::default().fg(Color::Yellow)),
-            Span::raw("Move up"),
+            Span::raw("Move up / Scroll up"),
         ]),
         Line::from(vec![
             Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
@@ -42,6 +46,24 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
             Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
             Span::raw("Back / Close"),
         ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Conversation",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  n          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Next turn"),
+        ]),
+        Line::from(vec![
+            Span::styled("  N          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Previous turn"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  General",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(vec![
             Span::styled("  q          ", Style::default().fg(Color::Yellow)),
             Span::raw("Quit"),

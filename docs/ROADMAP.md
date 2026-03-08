@@ -264,7 +264,7 @@ an async variant or wrapper.
 | Turn assembly state machine | Done | 0.1.0 |
 | JSONL parser + error types | Done | 0.1.0 |
 | Session discovery + empty states | Done | 0.1.0 |
-| Conversation viewer + turn nav | Planned | 0.1.0 |
+| Conversation viewer + turn nav | Done | 0.1.0 |
 | Token usage display | Planned | 0.1.0 |
 | Application shell | Planned | 0.1.0 |
 | Tool detail view | Planned | 0.2.0 |
@@ -293,9 +293,9 @@ relevant features are implemented.
   spawn with `isSidechain: true`, display it as
   `[Agent] (sidechain hidden)` in the conversation view. Low-cost since
   `ToolName::Agent` already exists. Sets user expectations for v0.5.
-- **`tool_summary()` helper**: Each tool type needs a one-line summary
-  for inline display (e.g., `[Read] src/main.rs (42 lines)`,
-  `[Bash] cargo test → exit 0`). Place in the TUI layer, not data/.
+- **`tool_summary()` helper**: ~~Each tool type needs a one-line summary
+  for inline display.~~ **Done in M3** — implemented in
+  `tui/widgets/conversation.rs` with per-tool formatting.
 - **`parse_warnings` on Session**: Store a `Vec<ParseWarning>` on
   `Session` for display in the TUI status bar (e.g., "3 orphaned
   records skipped").
@@ -325,3 +325,25 @@ relevant features are implemented.
 - **TUI rendering note**: Use `ProjectPath::decoded_path()` not the
   `Display` trait when rendering project paths in widgets. `Display`
   shows the raw encoded directory name.
+- **Scroll offset clamping**: Render-time clamping prevents blank
+  space past content, but `AppState.scroll_offset` can hold unclamped
+  values. If any future code reads scroll_offset expecting valid
+  bounds, it must re-clamp. Consider clamping in `handle_action` if
+  content line count becomes available to the state machine.
+- **Paragraph scroll u16 overflow**: `Paragraph::scroll()` takes
+  `u16`. Conversations with >65535 rendered lines would silently
+  wrap. Use `u16::try_from().unwrap_or(u16::MAX)` when this becomes
+  a realistic scenario.
+- **View-aware help text**: Help overlay shows j/k as "Move down /
+  Scroll down" for both views without distinguishing session
+  selection vs. line scrolling. Refine when view-specific help is
+  implemented.
+- **Vim navigation keys**: `g`/`G` (first/last), `Ctrl-d`/`Ctrl-u`
+  (half-page scroll), `Home`/`End` are not yet implemented. Track
+  for a future keybinding enhancement pass.
+- **Conversation render optimization**: `build_conversation_lines`
+  renders ALL turns every frame. For large sessions (hundreds of
+  turns), consider rendering only visible turns or caching line
+  output with invalidation on turn change/scroll.
+- **Status bar parse_warnings**: Display `parse_warnings.len()` in
+  the status bar when viewing a session (e.g., "3 warnings").

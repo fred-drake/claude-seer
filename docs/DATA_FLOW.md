@@ -343,9 +343,9 @@ the filesystem.
 
 ## Application State Machine (app.rs)
 
-As implemented in M2, the state machine handles session discovery,
-navigation, and empty state management. Future milestones will add
-conversation viewing (M3), token display (M4), and search (M5).
+As implemented through M3, the state machine handles session discovery,
+navigation, empty state management, and conversation viewing with turn
+navigation. Future milestones will add token display (M4) and search.
 
 ```rust
 /// All possible user/system actions.
@@ -353,13 +353,17 @@ pub enum Action {
     Quit,
     NavigateUp,
     NavigateDown,
-    SelectSession,           // Uses selected_index
+    SelectSession,                         // Uses selected_index
     BackToList,
+    NextTurn,                              // Jump to next turn (M3)
+    PrevTurn,                              // Jump to previous turn (M3)
     Resize(u16, u16),
-    SessionsLoaded(Vec<SessionSummary>),  // Background result
+    SessionsLoaded(Vec<SessionSummary>),   // Background result
+    SessionLoaded(Box<Session>),           // Session loaded (M3)
+    SessionLoadError(String),              // Session load failed (M3)
     LoadError(String),                     // Background error
     ToggleHelp,
-    // Future: NextTurn, PrevTurn, StartSearch, etc.
+    // Future: StartSearch, etc.
 }
 
 /// The view the TUI should render.
@@ -373,7 +377,7 @@ pub enum View {
 pub enum EmptyState {
     NoDirectory,    // No ~/.claude/ directory
     NoSessions,     // Directory exists, no sessions
-    Loading,        // Session list loading
+    Loading,        // Session list or session loading
     EmptySession,   // Selected session has 0 turns
 }
 
@@ -392,6 +396,9 @@ pub struct AppState {
     pub selected_index: usize,
     pub show_help: bool,
     pub terminal_size: (u16, u16),
+    pub current_session: Option<Session>,
+    pub current_turn_index: usize,
+    pub scroll_offset: usize,
 }
 ```
 
@@ -401,6 +408,13 @@ Key behaviors:
 - `BackToList` from `SessionList` view triggers `Exit`
 - `SessionsLoaded` with empty vec sets `NoSessions` empty state
 - `LoadError` sets `NoDirectory` empty state
+- `SelectSession` transitions to `Conversation` view with `Loading`
+  empty state and returns `LoadSession` side effect
+- `SessionLoaded` stores the session and clears loading state
+- `SessionLoaded` with 0 turns sets `EmptySession` empty state
+- `BackToList` from `Conversation` clears session state
+- `NextTurn`/`PrevTurn` navigate between turns, resetting scroll
+- `NavigateDown`/`NavigateUp` in `Conversation` view scroll content
 
 ### Why Side Effects Are Explicit
 
@@ -419,9 +433,10 @@ pub enum AppEvent {
     Terminal(crossterm::event::Event),
     /// Session list loaded in background.
     SessionsLoaded(Result<Vec<SessionSummary>, SourceError>),
+    /// Single session loaded in background (M3).
+    SessionLoaded(Result<Session, SourceError>),
     /// Tick for any periodic updates (optional)
     Tick,
-    // Future: SessionLoaded(Result<Session, SourceError>),
     // Future: SearchComplete(Vec<SearchHit>),
 }
 ```
@@ -661,14 +676,17 @@ hand-crafted minimal scenarios.
 ```
 1. User presses Enter on session list
 2. tui/event.rs maps KeyCode::Enter -> Action::SelectSession
-3. app.handle_action() returns SideEffect::LoadSession(id) using selected_index
+3. app.handle_action() transitions to View::Conversation with Loading
+   state and returns SideEffect::LoadSession(id)
 4. Main loop spawns std::thread to call data_source.load_session(id)
-5. Thread parses JSONL -> Vec<RawRecord>
-6. Thread assembles RawRecord stream into Session with Turns
-7. Thread computes token attribution & detects compaction events
+5. TUI renders Loading empty state while thread works
+6. Thread parses JSONL -> Vec<RawRecord>
+7. Thread assembles RawRecord stream into Session with Turns
 8. Thread sends AppEvent::SessionLoaded(Ok(session)) via channel
-9. Main loop receives event, calls app.set_session(session)
-10. Next render cycle: tui draws conversation view from app.current_session
+9. Main loop receives event, maps to Action::SessionLoaded(Box<Session>)
+10. app.handle_action() stores session, clears loading state
+11. Next render cycle: tui draws conversation view from
+    app.current_session with turn navigation (n/N) and scrolling (j/k)
 ```
 
 ## Data Flow: Cross-Session Search
