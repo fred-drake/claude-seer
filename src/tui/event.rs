@@ -18,6 +18,10 @@ pub enum AppEvent {
     ),
     /// A single session finished loading from the background thread.
     SessionLoaded(Result<crate::data::model::Session, crate::source::error::SourceError>),
+    /// Claude Code version was detected.
+    VersionLoaded(String),
+    /// Usage data was fetched.
+    UsageLoaded(crate::data::usage::UsageData),
     /// A tick for periodic updates (resize detection, etc.).
     Tick,
 }

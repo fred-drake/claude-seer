@@ -358,3 +358,23 @@ relevant features are implemented.
   in/out/cache totals. A per-category attribution breakdown
   (system prompt, tool I/O, thinking, etc.) fits v0.3 token
   attribution milestone.
+- **Title bar usage refresh**: Usage data is fetched once at startup
+  and goes stale during long sessions. Add manual refresh (`r`
+  keybinding) and/or auto-refresh on a timer (every 5 minutes).
+  The channel architecture already supports re-sending
+  `UsageLoaded` events.
+- **Show reset time when usage is high**: `resets_at` is stored in
+  `UsageWindow` but never displayed. When usage is yellow/red,
+  show the reset time in the title bar or a tooltip/detail view.
+- **Opus-specific usage display**: `seven_day_opus` is fetched but
+  not rendered. Consider displaying it when non-zero, either
+  inline in the title bar or in a detailed usage view.
+- **Title bar color assertion tests**: Tests verify text content
+  but don't assert on span colors. Add per-tier tests confirming
+  the style of usage value spans (green/yellow/red).
+- **Title bar render integration test**: No test renders via
+  `ratatui::backend::TestBackend` to verify the full render
+  pipeline (padding, alignment). Add with snapshot testing in v0.2.
+- **Lighter HTTP client**: `ureq` pulls ~11 transitive dependencies
+  for a single GET call. If binary size becomes a concern, consider
+  `minreq` or shelling out to `curl`.
