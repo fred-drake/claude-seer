@@ -18,12 +18,14 @@ use claude_seer::tui::ui;
 struct Cli {
     /// Path to the Claude projects directory
     /// [default: ~/.claude/projects/]
-    #[arg(long, short = 'p')]
+    #[arg(long, short = 'p', env = "CLAUDE_SEER_PATH")]
     path: Option<PathBuf>,
 
-    /// Path to the log file for tracing output
+    /// Path to the log file for tracing output.
+    /// Note: The default path /tmp/claude-seer.log may be world-readable.
+    /// Use this flag to specify a more secure location if needed.
     /// [default: /tmp/claude-seer.log]
-    #[arg(long)]
+    #[arg(long, env = "CLAUDE_SEER_LOG_FILE")]
     log_file: Option<PathBuf>,
 }
 

@@ -253,14 +253,14 @@ fn finalize_turn(
             // Merge all assistant responses into one.
             let merged = merge_assistant_responses(assistant_responses, tool_result_map);
             let is_complete = merged
-                .stop_reason
-                .as_deref()
+                .as_ref()
+                .and_then(|m| m.stop_reason.as_deref())
                 .is_some_and(|r| r == "end_turn");
 
             turns.push(Turn {
                 index: turns.len(),
                 user_message,
-                assistant_response: Some(merged),
+                assistant_response: merged,
                 duration: None,
                 is_complete,
                 events: Vec::new(),
@@ -271,17 +271,19 @@ fn finalize_turn(
 }
 
 /// Merge multiple assistant responses into one.
+/// Returns `None` if `responses` is empty.
 fn merge_assistant_responses(
     responses: Vec<AssistantResponse>,
     tool_result_map: &std::collections::HashMap<String, ToolResult>,
-) -> AssistantResponse {
-    debug_assert!(!responses.is_empty());
-
-    let first = &responses[0];
-    let last = responses.last().unwrap();
+) -> Option<AssistantResponse> {
+    let first = responses.first()?;
+    let first_id = first.id.clone();
+    let first_model = first.model.clone();
+    let first_timestamp = first.timestamp;
 
     let mut all_blocks: Vec<ContentBlock> = Vec::new();
     let mut total_usage = TokenUsage::default();
+    let mut last_stop_reason: Option<String> = None;
 
     for response in &responses {
         for block in &response.content_blocks {
@@ -295,16 +297,17 @@ fn merge_assistant_responses(
             all_blocks.push(block);
         }
         total_usage.add(&response.usage);
+        last_stop_reason.clone_from(&response.stop_reason);
     }
 
-    AssistantResponse {
-        id: first.id.clone(),
-        model: first.model.clone(),
-        timestamp: first.timestamp,
+    Some(AssistantResponse {
+        id: first_id,
+        model: first_model,
+        timestamp: first_timestamp,
         content_blocks: all_blocks,
         usage: total_usage,
-        stop_reason: last.stop_reason.clone(),
-    }
+        stop_reason: last_stop_reason,
+    })
 }
 
 /// Extract the last-prompt value from a session's content (pass 1).
@@ -696,5 +699,11 @@ mod tests {
         let result = summary_scan(&content);
         assert!(result.total_tokens.input_tokens > 0);
         assert!(result.total_tokens.output_tokens > 0);
+    }
+
+    #[test]
+    fn merge_assistant_responses_empty_returns_none() {
+        let result = merge_assistant_responses(vec![], &std::collections::HashMap::new());
+        assert!(result.is_none());
     }
 }
