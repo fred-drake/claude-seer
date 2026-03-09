@@ -5,6 +5,7 @@ use clap::Parser;
 use crossterm::event::{Event, KeyEventKind};
 
 use claude_seer::app::{Action, AppState, SideEffect};
+use claude_seer::data::usage;
 use claude_seer::source::DataSource;
 use claude_seer::source::filesystem::FilesystemSource;
 use claude_seer::tui::Tui;
@@ -87,6 +88,32 @@ fn main() -> miette::Result<()> {
         });
     }
 
+    // Spawn background Claude version detection.
+    {
+        let tx = tx.clone();
+        std::thread::spawn(move || match usage::fetch_claude_version() {
+            Ok(version) => {
+                let _ = tx.send(AppEvent::VersionLoaded(version));
+            }
+            Err(e) => {
+                tracing::debug!("could not detect Claude Code version: {e}");
+            }
+        });
+    }
+
+    // Spawn background usage data fetch.
+    {
+        let tx = tx.clone();
+        std::thread::spawn(move || match usage::fetch_usage_data() {
+            Ok(data) => {
+                let _ = tx.send(AppEvent::UsageLoaded(data));
+            }
+            Err(e) => {
+                tracing::debug!("could not fetch usage data: {e}");
+            }
+        });
+    }
+
     // Main event loop.
     loop {
         // Render.
@@ -118,6 +145,8 @@ fn main() -> miette::Result<()> {
             AppEvent::SessionsLoaded(Err(err)) => Some(Action::LoadError(err.to_string())),
             AppEvent::SessionLoaded(Ok(session)) => Some(Action::SessionLoaded(Box::new(session))),
             AppEvent::SessionLoaded(Err(err)) => Some(Action::SessionLoadError(err.to_string())),
+            AppEvent::VersionLoaded(version) => Some(Action::VersionLoaded(version)),
+            AppEvent::UsageLoaded(data) => Some(Action::UsageLoaded(data)),
             AppEvent::Tick => None,
         };
 

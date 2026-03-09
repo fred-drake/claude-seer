@@ -1,6 +1,7 @@
 // Application state machine -- pure logic, no TUI dependencies.
 
 use crate::data::model::{ProjectPath, Session, SessionId, SessionSummary};
+use crate::data::usage::{TitleBarInfo, UsageData};
 
 /// The view the TUI should render.
 #[derive(Debug, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub enum Action {
     LoadError(String),
     ToggleHelp,
     ToggleTokens,
+    VersionLoaded(String),
+    UsageLoaded(UsageData),
 }
 
 /// Side effects that the caller must execute.
@@ -62,6 +65,7 @@ pub struct AppState {
     pub current_turn_index: usize,
     pub scroll_offset: usize,
     pub last_error: Option<String>,
+    pub title_bar: TitleBarInfo,
 }
 
 impl Default for AppState {
@@ -84,6 +88,7 @@ impl AppState {
             current_turn_index: 0,
             scroll_offset: 0,
             last_error: None,
+            title_bar: TitleBarInfo::new(),
         }
     }
 
@@ -233,6 +238,16 @@ impl AppState {
 
             Action::Resize(w, h) => {
                 self.terminal_size = (w, h);
+                None
+            }
+
+            Action::VersionLoaded(version) => {
+                self.title_bar.claude_version = Some(version);
+                None
+            }
+
+            Action::UsageLoaded(usage) => {
+                self.title_bar.usage = Some(usage);
                 None
             }
         }
@@ -838,5 +853,37 @@ mod tests {
             .find(|(p, _)| p.0.as_os_str() == "proj-a")
             .unwrap();
         assert_eq!(proj_a.1.len(), 2);
+    }
+
+    #[test]
+    fn version_loaded_stores_version() {
+        let mut state = AppState::new();
+        assert!(state.title_bar.claude_version.is_none());
+        let effect = state.handle_action(Action::VersionLoaded("2.1.71".to_string()));
+        assert_eq!(effect, None);
+        assert_eq!(state.title_bar.claude_version, Some("2.1.71".to_string()));
+    }
+
+    #[test]
+    fn usage_loaded_stores_usage() {
+        use crate::data::usage::{UsageData, UsageWindow};
+
+        let mut state = AppState::new();
+        assert!(state.title_bar.usage.is_none());
+        let usage = UsageData {
+            five_hour: Some(UsageWindow {
+                utilization: 42.0,
+                resets_at: None,
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: 65.0,
+                resets_at: None,
+            }),
+            seven_day_opus: None,
+        };
+        let effect = state.handle_action(Action::UsageLoaded(usage));
+        assert_eq!(effect, None);
+        let stored = state.title_bar.usage.as_ref().unwrap();
+        assert!((stored.five_hour.as_ref().unwrap().utilization - 42.0).abs() < f64::EPSILON);
     }
 }
