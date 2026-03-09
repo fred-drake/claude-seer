@@ -80,6 +80,8 @@ pub fn map_key_to_action(key: KeyEvent, show_help: bool, view: &View) -> Option<
             KeyCode::Char('j') | KeyCode::Down => Some(Action::NavigateDown),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::NavigateUp),
             KeyCode::Char('t') => Some(Action::ToggleTokens),
+            KeyCode::Char('o') => Some(Action::ToggleTools),
+            KeyCode::Char('T') => Some(Action::ToggleThinking),
             KeyCode::Char('n') => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     Some(Action::PrevTurn)
@@ -285,5 +287,29 @@ mod tests {
     fn q_maps_to_quit_in_conversation() {
         let action = map_key_to_action(key(KeyCode::Char('q')), false, &conversation_view());
         assert!(matches!(action, Some(Action::Quit)));
+    }
+
+    #[test]
+    fn o_maps_to_toggle_tools_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('o')), false, &conversation_view());
+        assert!(matches!(action, Some(Action::ToggleTools)));
+    }
+
+    #[test]
+    fn o_does_nothing_in_session_list() {
+        let action = map_key_to_action(key(KeyCode::Char('o')), false, &session_list_view());
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn shift_t_maps_to_toggle_thinking_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('T')), false, &conversation_view());
+        assert!(matches!(action, Some(Action::ToggleThinking)));
+    }
+
+    #[test]
+    fn shift_t_does_nothing_in_session_list() {
+        let action = map_key_to_action(key(KeyCode::Char('T')), false, &session_list_view());
+        assert!(action.is_none());
     }
 }

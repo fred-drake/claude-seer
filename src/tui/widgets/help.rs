@@ -88,6 +88,14 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
                 Span::styled("  t          ", Style::default().fg(Color::Yellow)),
                 Span::raw("Toggle token display"),
             ]));
+            lines.push(Line::from(vec![
+                Span::styled("  o          ", Style::default().fg(Color::Yellow)),
+                Span::raw("Toggle tool calls"),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  T          ", Style::default().fg(Color::Yellow)),
+                Span::raw("Toggle thinking"),
+            ]));
         }
     }
 
@@ -301,5 +309,25 @@ mod tests {
                 "Expected 'Toggle help' in {text}"
             );
         }
+    }
+
+    #[test]
+    fn conversation_help_shows_toggle_tools() {
+        let view = View::Conversation(SessionId("test".to_string()));
+        let text = help_text(&view);
+        assert!(
+            text.contains("Toggle tool calls"),
+            "Expected 'Toggle tool calls', got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn conversation_help_shows_toggle_thinking() {
+        let view = View::Conversation(SessionId("test".to_string()));
+        let text = help_text(&view);
+        assert!(
+            text.contains("Toggle thinking"),
+            "Expected 'Toggle thinking', got:\n{text}"
+        );
     }
 }
