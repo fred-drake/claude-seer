@@ -4,7 +4,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 
 use crate::app::{AppState, View};
-use crate::tui::widgets::{conversation, empty_state, help, session_list, status_bar, title_bar};
+use crate::tui::widgets::{
+    conversation, empty_state, help, project_list, session_list, status_bar, title_bar,
+};
 
 /// Render the entire UI based on current app state.
 pub fn render(frame: &mut Frame, state: &AppState) {
@@ -27,6 +29,13 @@ pub fn render(frame: &mut Frame, state: &AppState) {
 
     // Render content based on view + empty state.
     match &state.view {
+        View::ProjectList => {
+            if let Some(ref empty) = state.empty_state {
+                empty_state::render_empty_state(frame, content_area, empty);
+            } else {
+                project_list::render_project_list(frame, content_area, state);
+            }
+        }
         View::SessionList => {
             if let Some(ref empty) = state.empty_state {
                 empty_state::render_empty_state(frame, content_area, empty);

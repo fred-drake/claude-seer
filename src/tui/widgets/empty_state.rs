@@ -11,31 +11,29 @@ use crate::app::EmptyState;
 /// Render the appropriate empty state message.
 pub fn render_empty_state(frame: &mut Frame, area: Rect, empty_state: &EmptyState) {
     match empty_state {
-        EmptyState::Loading => render_loading(frame, area),
+        EmptyState::LoadingProjects => render_loading(frame, area, "Scanning projects..."),
+        EmptyState::LoadingSessions => render_loading(frame, area, "Loading sessions..."),
+        EmptyState::LoadingSession => render_loading(frame, area, "Loading session..."),
         EmptyState::NoDirectory => render_no_directory(frame, area),
+        EmptyState::NoProjects => render_no_projects(frame, area),
         EmptyState::NoSessions => render_no_sessions(frame, area),
         EmptyState::EmptySession => render_empty_session(frame, area),
     }
 }
 
-fn render_loading(frame: &mut Frame, area: Rect) {
+fn render_loading(frame: &mut Frame, area: Rect, message: &str) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Loading sessions...",
+            format!("  {message}"),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Scanning ~/.claude/projects/ for session data.",
-            Style::default().fg(Color::DarkGray),
-        )),
     ];
 
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().title(" Sessions ").borders(Borders::ALL))
+        .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
@@ -78,6 +76,29 @@ fn render_no_directory(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+fn render_no_projects(frame: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  No projects found",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("  The projects directory exists but contains no session files."),
+        Line::from(""),
+        Line::from("  Run a Claude Code session to generate session data,"),
+        Line::from("  then re-launch claude-seer."),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().title(" Projects ").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, area);
+}
+
 fn render_no_sessions(frame: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(""),
@@ -88,9 +109,9 @@ fn render_no_sessions(frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("  The projects directory exists but contains no session files."),
+        Line::from("  This project has no session files."),
         Line::from(""),
-        Line::from("  Run a Claude Code session to generate session data,"),
+        Line::from("  Run a Claude Code session in this project to generate data,"),
         Line::from("  then re-launch claude-seer."),
     ];
 

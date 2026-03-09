@@ -64,8 +64,9 @@ fn main() -> miette::Result<()> {
     tracing::info!("starting claude-seer");
     tracing::info!("projects path: {}", projects_path.display());
 
-    // Initialize app state.
-    let mut app = AppState::new();
+    // Initialize app state with CWD for project prioritization.
+    let cwd = std::env::current_dir().ok();
+    let mut app = AppState::new().with_cwd(cwd);
 
     // Initialize terminal.
     let mut tui = Tui::new().map_err(|e| miette::miette!("failed to initialize terminal: {e}"))?;
@@ -79,14 +80,14 @@ fn main() -> miette::Result<()> {
     // Spawn crossterm event reader thread.
     spawn_event_reader(tx.clone());
 
-    // Spawn background session loading.
+    // Spawn background project loading (metadata-only, fast).
     {
         let tx = tx.clone();
         let path = projects_path.clone();
         std::thread::spawn(move || {
             let source = FilesystemSource::new(path);
-            let result = source.list_sessions();
-            let _ = tx.send(AppEvent::SessionsLoaded(result));
+            let result = source.list_projects();
+            let _ = tx.send(AppEvent::ProjectsLoaded(result));
         });
     }
 
@@ -143,6 +144,8 @@ fn main() -> miette::Result<()> {
             }
             AppEvent::Terminal(Event::Resize(w, h)) => Some(Action::Resize(w, h)),
             AppEvent::Terminal(_) => None,
+            AppEvent::ProjectsLoaded(Ok(projects)) => Some(Action::ProjectsLoaded(projects)),
+            AppEvent::ProjectsLoaded(Err(err)) => Some(Action::LoadError(err.to_string())),
             AppEvent::SessionsLoaded(Ok(summaries)) => Some(Action::SessionsLoaded(summaries)),
             AppEvent::SessionsLoaded(Err(err)) => Some(Action::LoadError(err.to_string())),
             AppEvent::SessionLoaded(Ok(session)) => Some(Action::SessionLoaded(Box::new(session))),
@@ -174,6 +177,15 @@ fn main() -> miette::Result<()> {
                     std::thread::spawn(move || {
                         let source = FilesystemSource::new(path);
                         let result = source.list_sessions();
+                        let _ = tx.send(AppEvent::SessionsLoaded(result));
+                    });
+                }
+                Some(SideEffect::LoadProjectSessions(project)) => {
+                    let tx = tx.clone();
+                    let path = projects_path.clone();
+                    std::thread::spawn(move || {
+                        let source = FilesystemSource::new(path);
+                        let result = source.list_sessions_for_project(&project);
                         let _ = tx.send(AppEvent::SessionsLoaded(result));
                     });
                 }

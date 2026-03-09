@@ -1,4 +1,4 @@
-// Session browser widget -- renders grouped session list.
+// Session browser widget -- renders session list scoped to one project.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -11,42 +11,22 @@ use crate::data::model::SessionSummary;
 
 /// Render the session list into the given area.
 pub fn render_session_list(frame: &mut Frame, area: Rect, state: &AppState) {
-    let groups = state.grouped_sessions();
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .map(|session| ListItem::new(format_session_line(session)))
+        .collect();
 
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut list_index = 0;
-    let mut selected_list_index = None;
-
-    for (project, sessions) in &groups {
-        // Project header.
-        let decoded = project.decoded_path();
-        let header = Line::from(vec![Span::styled(
-            format!(" {} ", decoded.display()),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]);
-        items.push(ListItem::new(header));
-        list_index += 1;
-
-        // Sessions under this project.
-        for session in sessions {
-            let is_selected = state
-                .sessions
-                .get(state.selected_index)
-                .is_some_and(|s| s.id == session.id);
-            if is_selected {
-                selected_list_index = Some(list_index);
-            }
-
-            let line = format_session_line(session);
-            items.push(ListItem::new(line));
-            list_index += 1;
-        }
-    }
+    let title = if let Some(ref project) = state.selected_project {
+        let name = project.display_name();
+        let count = state.sessions.len();
+        format!(" {} \u{2014} {} sessions ", name, count)
+    } else {
+        " Sessions ".to_string()
+    };
 
     let list = List::new(items)
-        .block(Block::default().title(" Sessions ").borders(Borders::ALL))
+        .block(Block::default().title(title).borders(Borders::ALL))
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -55,7 +35,9 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, state: &AppState) {
         .highlight_symbol(">> ");
 
     let mut list_state = ListState::default();
-    list_state.select(selected_list_index);
+    if !state.sessions.is_empty() {
+        list_state.select(Some(state.selected_index));
+    }
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
@@ -64,8 +46,7 @@ pub fn render_session_list(frame: &mut Frame, area: Rect, state: &AppState) {
 fn format_session_line(session: &SessionSummary) -> Line<'static> {
     let mut spans = Vec::new();
 
-    // Indent for nesting under project header.
-    spans.push(Span::raw("   "));
+    spans.push(Span::raw(" "));
 
     // Date/time.
     if let Some(ts) = session.last_activity {

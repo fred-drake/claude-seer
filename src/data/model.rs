@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Newtype wrappers to prevent mixing IDs at compile time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -48,6 +48,47 @@ impl ProjectPath {
         } else {
             self.0.clone()
         }
+    }
+
+    /// Extract the last component of the decoded path for display.
+    ///
+    /// Uses `decoded_path()` to convert the encoded name back to a path,
+    /// then extracts the file name. Note: since decoding is lossy (dashes
+    /// in real directory names are indistinguishable from path separators),
+    /// the result is an approximation.
+    ///
+    /// - `-Users-fdrake` → `"fdrake"`
+    /// - `-` (root) → `"/"`
+    /// - Empty string → `""`
+    /// - No leading dash (e.g. `"my-project"`) → return full string
+    pub fn display_name(&self) -> String {
+        let s = self.0.to_string_lossy();
+        if s.is_empty() {
+            return String::new();
+        }
+        if !s.starts_with('-') {
+            return s.to_string();
+        }
+        let decoded = self.decoded_path();
+        decoded
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string())
+    }
+
+    /// Check if this project path matches a given CWD.
+    ///
+    /// Claude Code encodes project paths by replacing `/` and `.` with `-`,
+    /// so we encode the CWD the same way and compare.
+    pub fn matches_cwd(&self, cwd: &Path) -> bool {
+        let s = cwd.to_string_lossy();
+        let normalized = s.trim_end_matches('/');
+        if normalized.is_empty() {
+            // Root "/" normalizes to "", encodes to "-"
+            return self.0.to_string_lossy() == "-";
+        }
+        let encoded = normalized.replace('/', "-").replace('.', "-");
+        self.0.to_string_lossy() == encoded
     }
 }
 
@@ -324,6 +365,79 @@ pub enum ParseWarning {
     SkippedSidechain { uuid: String },
 }
 
+/// Summary for project list display (metadata-only, no file reading).
+#[derive(Debug, Clone)]
+pub struct ProjectSummary {
+    pub path: ProjectPath,
+    pub display_name: String,
+    pub session_count: usize,
+    pub last_activity: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Format a DateTime<Utc> as human-readable relative time.
+///
+/// Returns strings like "just now", "5 min ago", "2 hours ago", "3 days ago",
+/// "2 weeks ago", "1 month ago", "1 year ago".
+pub fn format_relative_time(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(dt);
+    let secs = duration.num_seconds();
+
+    if secs < 0 {
+        return "just now".to_string();
+    }
+
+    if secs < 60 {
+        return "just now".to_string();
+    }
+
+    let minutes = secs / 60;
+    if minutes < 60 {
+        if minutes == 1 {
+            return "1 minute ago".to_string();
+        }
+        return format!("{minutes} minutes ago");
+    }
+
+    let hours = minutes / 60;
+    if hours < 24 {
+        if hours == 1 {
+            return "1 hour ago".to_string();
+        }
+        return format!("{hours} hours ago");
+    }
+
+    let days = hours / 24;
+    if days < 7 {
+        if days == 1 {
+            return "1 day ago".to_string();
+        }
+        return format!("{days} days ago");
+    }
+
+    if days < 30 {
+        let weeks = days / 7;
+        if weeks == 1 {
+            return "1 week ago".to_string();
+        }
+        return format!("{weeks} weeks ago");
+    }
+
+    if days < 365 {
+        let months = days / 30;
+        if months == 1 {
+            return "1 month ago".to_string();
+        }
+        return format!("{months} months ago");
+    }
+
+    let years = days / 365;
+    if years == 1 {
+        return "1 year ago".to_string();
+    }
+    format!("{years} years ago")
+}
+
 /// Summary for session list display (avoids loading full session).
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
@@ -343,6 +457,92 @@ pub struct SessionSummary {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    // --- ProjectPath::display_name tests ---
+
+    #[rstest]
+    #[case("-Users-fdrake-Source-github.com-fred-drake-claude-seer", "seer")]
+    #[case("-Users-fdrake", "fdrake")]
+    #[case("-", "/")]
+    #[case("my-project", "my-project")]
+    fn project_path_display_name(#[case] input: &str, #[case] expected: &str) {
+        let p = ProjectPath(PathBuf::from(input));
+        assert_eq!(p.display_name(), expected);
+    }
+
+    #[test]
+    fn project_path_display_name_empty() {
+        let p = ProjectPath(PathBuf::from(""));
+        assert_eq!(p.display_name(), "");
+    }
+
+    // --- ProjectPath::matches_cwd tests ---
+
+    #[test]
+    fn project_path_matches_cwd_exact() {
+        let p = ProjectPath(PathBuf::from("-Users-fdrake-Source-project"));
+        assert!(p.matches_cwd(Path::new("/Users/fdrake/Source/project")));
+    }
+
+    #[test]
+    fn project_path_matches_cwd_no_match() {
+        let p = ProjectPath(PathBuf::from("-Users-fdrake-Source-project"));
+        assert!(!p.matches_cwd(Path::new("/Users/fdrake/Source/other")));
+    }
+
+    #[test]
+    fn project_path_matches_cwd_trailing_slash() {
+        let p = ProjectPath(PathBuf::from("-Users-fdrake-Source-project"));
+        assert!(p.matches_cwd(Path::new("/Users/fdrake/Source/project/")));
+    }
+
+    #[test]
+    fn project_path_matches_cwd_root() {
+        let p = ProjectPath(PathBuf::from("-"));
+        assert!(p.matches_cwd(Path::new("/")));
+    }
+
+    #[test]
+    fn project_path_matches_cwd_with_dots_in_path() {
+        // Claude Code encodes both `/` and `.` as `-`
+        let p = ProjectPath(PathBuf::from(
+            "-Volumes-External-Users-fdrake-Source-github-com-fred-drake-claude-seer",
+        ));
+        assert!(p.matches_cwd(Path::new(
+            "/Volumes/External/Users/fdrake/Source/github.com/fred-drake/claude-seer"
+        )));
+    }
+
+    // --- format_relative_time tests ---
+
+    #[rstest]
+    #[case(0, "just now")]
+    #[case(30, "just now")]
+    #[case(59, "just now")]
+    #[case(60, "1 minute ago")]
+    #[case(300, "5 minutes ago")]
+    #[case(3599, "59 minutes ago")]
+    #[case(3600, "1 hour ago")]
+    #[case(7200, "2 hours ago")]
+    #[case(86399, "23 hours ago")]
+    #[case(86400, "1 day ago")]
+    #[case(172800, "2 days ago")]
+    #[case(604800, "1 week ago")]
+    #[case(1209600, "2 weeks ago")]
+    #[case(2592000, "1 month ago")]
+    #[case(5184000, "2 months ago")]
+    #[case(31536000, "1 year ago")]
+    #[case(63072000, "2 years ago")]
+    fn format_relative_time_cases(#[case] secs_ago: i64, #[case] expected: &str) {
+        let dt = chrono::Utc::now() - chrono::Duration::seconds(secs_ago);
+        assert_eq!(format_relative_time(dt), expected);
+    }
+
+    #[test]
+    fn format_relative_time_future_is_just_now() {
+        let future = chrono::Utc::now() + chrono::Duration::seconds(600);
+        assert_eq!(format_relative_time(future), "just now");
+    }
 
     #[test]
     fn session_id_equality() {

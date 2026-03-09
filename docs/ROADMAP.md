@@ -1,6 +1,6 @@
 # Claude Seer - Product Roadmap
 
-Last Updated: 2026-03-09 | Version: 0.1.0 (all milestones complete)
+Last Updated: 2026-03-09 | Version: 0.1.0 (post-review fixes applied)
 
 ## Vision
 
@@ -100,13 +100,14 @@ spend across the conversation. A help overlay (`?`) lists all keybindings.
 If no Claude Code data exists, you see a helpful guidance message.
 
 **How it works in practice:** You open a terminal, run `claude-seer`, and
-see a two-panel layout. The left panel lists your projects (decoded from
-`~/.claude/projects/` directory names) with sessions nested beneath, sorted
-by most recent. Each session shows its date/time, message count, branch
-name, and first prompt as a title preview. You navigate with `j`/`k`,
-press `Enter` to open a session, and the right panel fills with the
-conversation. You scroll through messages, jump between turns with `n`/`N`,
-and see token counts alongside each assistant response. Press `q` to back
+see a project list. Projects are decoded from `~/.claude/projects/` directory
+names and sorted by most recent activity, with the CWD project highlighted
+first. Each project shows session count and relative time. Press `Enter` to
+open a project and see its sessions — each with date/time, message count,
+branch name, and first prompt. Press `Enter` again to open a session, and
+the view fills with the conversation. You scroll through messages, jump
+between turns with `n`/`N`, and see token counts alongside each assistant
+response. Press `Esc` to navigate back through the hierarchy. Press `q` to
 out or quit. Use `--path /custom/path` for non-standard installs.
 
 **Milestones:**
@@ -381,3 +382,17 @@ relevant features are implemented.
 - **Warning detail view**: Allow inspecting individual parse warnings
   (line number, reason, etc.) rather than just showing a count.
   Natural fit for v0.2 alongside tool detail views.
+- **`list_sessions_for_project()` streaming optimization**:
+  Currently reads entire JSONL files, same as `list_sessions()`.
+  Consider streaming/partial read (first + last lines) for large
+  sessions. Target v0.2.
+- **Deprecate `list_sessions()` trait method**: No longer used in the
+  production flow (replaced by `list_projects()` +
+  `list_sessions_for_project()`). Consider removing from the
+  `DataSource` trait in a future version.
+- **`AppState` field grouping**: AppState has 15+ fields. Consider
+  grouping into sub-structs (`ProjectListState`,
+  `SessionListState`, `ConversationState`) when adding more views.
+- **`g`/`G` keybindings**: Jump-to-top/bottom navigation not yet
+  implemented. Defer to a follow-up keybinding enhancement pass
+  alongside `Ctrl-d`/`Ctrl-u` (half-page scroll).
