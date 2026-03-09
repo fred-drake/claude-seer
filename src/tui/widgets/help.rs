@@ -13,6 +13,7 @@ use super::layout::centered_rect;
 /// Build the help text descriptions for j/k keys based on current view.
 fn jk_descriptions(view: &View) -> (&'static str, &'static str) {
     match view {
+        View::ProjectList => ("Select next project", "Select previous project"),
         View::SessionList => ("Select next session", "Select previous session"),
         View::Conversation(_) => ("Scroll down", "Scroll up"),
     }
@@ -45,6 +46,16 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
     ];
 
     match view {
+        View::ProjectList => {
+            lines.push(Line::from(vec![
+                Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
+                Span::raw("Open project"),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
+                Span::raw("Quit"),
+            ]));
+        }
         View::SessionList => {
             lines.push(Line::from(vec![
                 Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
@@ -52,13 +63,13 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
-                Span::raw("Quit"),
+                Span::raw("Back to projects"),
             ]));
         }
         View::Conversation(_) => {
             lines.push(Line::from(vec![
                 Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
-                Span::raw("Back to session list"),
+                Span::raw("Back to sessions"),
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -226,12 +237,12 @@ mod tests {
     }
 
     #[test]
-    fn conversation_help_shows_back_to_session_list() {
+    fn conversation_help_shows_back_to_sessions() {
         let view = View::Conversation(SessionId("test".to_string()));
         let text = help_text(&view);
         assert!(
-            text.contains("Back to session list"),
-            "Expected 'Back to session list', got:\n{text}"
+            text.contains("Back to sessions"),
+            "Expected 'Back to sessions', got:\n{text}"
         );
     }
 
@@ -277,8 +288,9 @@ mod tests {
     }
 
     #[test]
-    fn both_views_show_quit_and_help() {
+    fn all_views_show_quit_and_help() {
         for view in [
+            View::ProjectList,
             View::SessionList,
             View::Conversation(SessionId("t".to_string())),
         ] {

@@ -12,6 +12,10 @@ use crate::app::{Action, View};
 pub enum AppEvent {
     /// A crossterm terminal event.
     Terminal(Event),
+    /// Projects finished loading from the background thread.
+    ProjectsLoaded(
+        Result<Vec<crate::data::model::ProjectSummary>, crate::source::error::SourceError>,
+    ),
     /// Sessions finished loading from the background thread.
     SessionsLoaded(
         Result<Vec<crate::data::model::SessionSummary>, crate::source::error::SourceError>,
@@ -60,6 +64,12 @@ pub fn map_key_to_action(key: KeyEvent, show_help: bool, view: &View) -> Option<
 
     // View-specific bindings.
     match view {
+        View::ProjectList => match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::NavigateDown),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::NavigateUp),
+            KeyCode::Enter => Some(Action::SelectProject),
+            _ => None,
+        },
         View::SessionList => match key.code {
             KeyCode::Char('j') | KeyCode::Down => Some(Action::NavigateDown),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::NavigateUp),
@@ -107,12 +117,40 @@ mod tests {
         }
     }
 
+    fn project_list_view() -> View {
+        View::ProjectList
+    }
+
     fn session_list_view() -> View {
         View::SessionList
     }
 
     fn conversation_view() -> View {
         View::Conversation(SessionId("test".to_string()))
+    }
+
+    #[test]
+    fn enter_maps_to_select_project_in_project_list() {
+        let action = map_key_to_action(key(KeyCode::Enter), false, &project_list_view());
+        assert!(matches!(action, Some(Action::SelectProject)));
+    }
+
+    #[test]
+    fn j_maps_to_navigate_down_in_project_list() {
+        let action = map_key_to_action(key(KeyCode::Char('j')), false, &project_list_view());
+        assert!(matches!(action, Some(Action::NavigateDown)));
+    }
+
+    #[test]
+    fn k_maps_to_navigate_up_in_project_list() {
+        let action = map_key_to_action(key(KeyCode::Char('k')), false, &project_list_view());
+        assert!(matches!(action, Some(Action::NavigateUp)));
+    }
+
+    #[test]
+    fn esc_maps_to_back_in_project_list() {
+        let action = map_key_to_action(key(KeyCode::Esc), false, &project_list_view());
+        assert!(matches!(action, Some(Action::BackToList)));
     }
 
     #[test]

@@ -32,7 +32,8 @@ claude-seer/
       ui.rs                  -- Root layout dispatcher
       widgets/
         mod.rs
-        session_list.rs      -- Session browser pane
+        project_list.rs      -- Project browser (landing page)
+        session_list.rs      -- Session browser (scoped to one project)
         conversation.rs      -- Message/turn viewer pane
         token_chart.rs       -- Token usage visualization
         tool_detail.rs       -- Tool call inspector
@@ -290,28 +291,22 @@ expected. The compiler catches this.
 ## DataSource Trait (source/mod.rs)
 
 ```rust
-/// Abstraction over where session data comes from.
-/// This is the key trait for testability -- tests provide
-/// an in-memory implementation, production uses filesystem.
 pub trait DataSource: Send + Sync {
+    /// List all projects with metadata (session count, last activity).
+    /// Uses only filesystem metadata for performance.
+    fn list_projects(&self) -> Result<Vec<ProjectSummary>, SourceError>;
+
+    /// List session summaries scoped to a single project.
+    fn list_sessions_for_project(
+        &self,
+        project: &ProjectPath,
+    ) -> Result<Vec<SessionSummary>, SourceError>;
+
     /// List all available session summaries.
-    /// Returns lightweight metadata without full parsing.
     fn list_sessions(&self) -> Result<Vec<SessionSummary>, SourceError>;
 
     /// Load and fully parse a single session.
     fn load_session(&self, id: &SessionId) -> Result<Session, SourceError>;
-
-    /// Load subagent data for a session.
-    fn load_subagents(
-        &self,
-        id: &SessionId,
-    ) -> Result<Vec<SubagentSession>, SourceError>;
-
-    /// Stream raw lines for search (avoids full parse).
-    fn search_raw(
-        &self,
-        query: &SearchQuery,
-    ) -> Result<Vec<SearchHit>, SourceError>;
 }
 ```
 
@@ -343,78 +338,67 @@ the filesystem.
 
 ## Application State Machine (app.rs)
 
-As implemented through M3, the state machine handles session discovery,
-navigation, empty state management, and conversation viewing with turn
-navigation. Future milestones will add token display (M4) and search.
+The state machine handles three-level navigation: ProjectList →
+SessionList → Conversation, plus empty state management and turn
+navigation.
 
 ```rust
-/// All possible user/system actions.
+pub enum View {
+    ProjectList,                           // Landing page
+    SessionList,                           // Sessions for one project
+    Conversation(SessionId),               // Full conversation view
+}
+
 pub enum Action {
     Quit,
     NavigateUp,
     NavigateDown,
-    SelectSession,                         // Uses selected_index
-    BackToList,
-    NextTurn,                              // Jump to next turn (M3)
-    PrevTurn,                              // Jump to previous turn (M3)
+    SelectProject,                         // Enter on project list
+    SelectSession,                         // Enter on session list
+    BackToList,                            // Esc (context-dependent)
+    NextTurn,
+    PrevTurn,
     Resize(u16, u16),
+    ProjectsLoaded(Vec<ProjectSummary>),   // Background result
     SessionsLoaded(Vec<SessionSummary>),   // Background result
-    SessionLoaded(Box<Session>),           // Session loaded (M3)
-    SessionLoadError(String),              // Session load failed (M3)
-    LoadError(String),                     // Background error
+    SessionLoaded(Box<Session>),
+    SessionLoadError(String),
+    LoadError(String),
     ToggleHelp,
-    // Future: StartSearch, etc.
+    ToggleTokens,
+    VersionLoaded(String),
+    UsageLoaded(UsageData),
 }
 
-/// The view the TUI should render.
-pub enum View {
-    SessionList,
-    Conversation(SessionId),
-    // Future: ToolDetail, Search
-}
-
-/// Empty state conditions for display.
 pub enum EmptyState {
     NoDirectory,    // No ~/.claude/ directory
-    NoSessions,     // Directory exists, no sessions
-    Loading,        // Session list or session loading
+    NoProjects,     // Directory exists, no projects with sessions
+    NoSessions,     // Project exists, no sessions
+    Loading,        // Data is loading
     EmptySession,   // Selected session has 0 turns
 }
 
-/// Side effects that the caller must execute.
 pub enum SideEffect {
     Exit,
     LoadSessionList,
     LoadSession(SessionId),
-    // Future: PerformSearch(SearchQuery)
-}
-
-pub struct AppState {
-    pub view: View,
-    pub empty_state: Option<EmptyState>,
-    pub sessions: Vec<SessionSummary>,
-    pub selected_index: usize,
-    pub show_help: bool,
-    pub terminal_size: (u16, u16),
-    pub current_session: Option<Session>,
-    pub current_turn_index: usize,
-    pub scroll_offset: usize,
+    LoadProjectSessions(ProjectPath),      // Load sessions for one project
 }
 ```
 
 Key behaviors:
-- Sessions are sorted by `last_activity` descending (most recent first)
-- `grouped_sessions()` groups by `ProjectPath` for display
-- `BackToList` from `SessionList` view triggers `Exit`
-- `SessionsLoaded` with empty vec sets `NoSessions` empty state
-- `LoadError` sets `NoDirectory` empty state
-- `SelectSession` transitions to `Conversation` view with `Loading`
-  empty state and returns `LoadSession` side effect
-- `SessionLoaded` stores the session and clears loading state
-- `SessionLoaded` with 0 turns sets `EmptySession` empty state
-- `BackToList` from `Conversation` clears session state
-- `NextTurn`/`PrevTurn` navigate between turns, resetting scroll
-- `NavigateDown`/`NavigateUp` in `Conversation` view scroll content
+- **Navigation flow**: ProjectList → SessionList → Conversation
+- **ProjectsLoaded**: CWD-matching project sorted first, then by
+  `last_activity` descending
+- **BackToList** is context-dependent:
+  - From ProjectList → `SideEffect::Exit`
+  - From SessionList → back to ProjectList (preserves project list
+    and selection index)
+  - From Conversation → back to SessionList
+- **SelectProject** transitions to SessionList with Loading state,
+  returns `SideEffect::LoadProjectSessions(path)`
+- Sessions within a project are sorted by `last_activity` descending
+- `list_projects()` uses metadata only (readdir + stat) for fast startup
 
 ### Why Side Effects Are Explicit
 
@@ -429,15 +413,13 @@ it produces new state + optional side effect. This means:
 
 ```rust
 pub enum AppEvent {
-    /// Crossterm terminal event (key press, resize, etc.)
     Terminal(crossterm::event::Event),
-    /// Session list loaded in background.
+    ProjectsLoaded(Result<Vec<ProjectSummary>, SourceError>),
     SessionsLoaded(Result<Vec<SessionSummary>, SourceError>),
-    /// Single session loaded in background (M3).
     SessionLoaded(Result<Session, SourceError>),
-    /// Tick for any periodic updates (optional)
+    VersionLoaded(String),
+    UsageLoaded(UsageData),
     Tick,
-    // Future: SearchComplete(Vec<SearchHit>),
 }
 ```
 
@@ -670,6 +652,27 @@ hand-crafted minimal scenarios.
 - Search uses rayon for parallel file scanning (future optimization)
 - Widget rendering avoids allocation: use `Line::from()` with
   borrowed `&str` where possible
+
+## Data Flow: App Startup
+
+```
+1. main.rs spawns thread calling source.list_projects() (metadata only)
+2. Thread sends AppEvent::ProjectsLoaded via channel
+3. app.handle_action(ProjectsLoaded) sorts projects (CWD first)
+4. TUI renders project list with session counts and relative times
+```
+
+## Data Flow: User Opens a Project
+
+```
+1. User presses Enter on project list
+2. tui/event.rs maps KeyCode::Enter -> Action::SelectProject
+3. app.handle_action() transitions to View::SessionList with Loading,
+   returns SideEffect::LoadProjectSessions(path)
+4. Main loop spawns thread calling source.list_sessions_for_project()
+5. Thread sends AppEvent::SessionsLoaded via channel
+6. app stores sessions, TUI renders session list for that project
+```
 
 ## Data Flow: User Opens a Session
 

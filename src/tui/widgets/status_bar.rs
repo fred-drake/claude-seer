@@ -30,15 +30,41 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
     let warning_style = Style::default().fg(Color::Yellow).bg(Color::DarkGray);
 
     match &state.view {
+        View::ProjectList => {
+            let project_count = state.projects.len();
+            let project_label = if project_count == 1 {
+                "project"
+            } else {
+                "projects"
+            };
+            let core = format!(" {} {project_label}", project_count);
+            let hints: &[&str] = &[" | Esc: quit", " | ? help"];
+
+            for drop_count in 0..=hints.len() {
+                let keep = hints.len() - drop_count;
+                let suffix: String = hints[..keep].iter().copied().collect();
+                let candidate = format!("{core}{suffix}");
+                if candidate.len() <= max_width {
+                    return vec![Span::styled(candidate, default_style)];
+                }
+            }
+
+            vec![Span::styled(core, default_style)]
+        }
         View::SessionList => {
             let session_count = state.sessions.len();
-            let core = if let Some(ref err) = state.last_error {
-                format!(" {} session(s) | Error: {}", session_count, err)
+            let session_label = if session_count == 1 {
+                "session"
             } else {
-                format!(" {} session(s)", session_count)
+                "sessions"
+            };
+            let core = if let Some(ref err) = state.last_error {
+                format!(" {} {session_label} | Error: {}", session_count, err)
+            } else {
+                format!(" {} {session_label}", session_count)
             };
 
-            let hints: &[&str] = &[" | Esc: quit", " | ? help"];
+            let hints: &[&str] = &[" | Esc: back", " | ? help"];
 
             for drop_count in 0..=hints.len() {
                 let keep = hints.len() - drop_count;
@@ -243,25 +269,34 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_session_list_shows_session_count() {
+    fn status_bar_project_list_shows_project_count() {
         let state = AppState::new();
         let text = build_status_text(&state);
-        assert!(text.contains("session(s)"));
+        assert!(text.contains("projects"));
     }
 
     #[test]
-    fn status_bar_session_list_shows_esc_quit() {
+    fn status_bar_project_list_shows_esc_quit() {
         let state = AppState::new();
         let text = build_status_text(&state);
         assert!(
             text.contains("Esc: quit"),
-            "Session list status bar should show Esc hint, got: {text}"
+            "Project list status bar should show Esc hint, got: {text}"
         );
     }
 
     #[test]
+    fn status_bar_session_list_shows_session_count() {
+        let mut state = AppState::new();
+        state.view = View::SessionList;
+        let text = build_status_text(&state);
+        assert!(text.contains("sessions"));
+    }
+
+    #[test]
     fn status_bar_session_list_narrow_drops_help_first() {
-        let state = AppState::new();
+        let mut state = AppState::new();
+        state.view = View::SessionList;
         let full = build_status_text_for_width(&state, 200);
         assert!(full.contains("? help"), "Full should have ? help: {full}");
 
@@ -272,17 +307,18 @@ mod tests {
             "Narrow should drop ? help: {narrow}"
         );
         assert!(
-            narrow.contains("Esc: quit"),
+            narrow.contains("Esc: back"),
             "Narrow should still have Esc: {narrow}"
         );
     }
 
     #[test]
     fn status_bar_session_list_very_narrow_drops_all_hints() {
-        let state = AppState::new();
+        let mut state = AppState::new();
+        state.view = View::SessionList;
         let text = build_status_text_for_width(&state, 15);
         assert!(
-            text.contains("session(s)"),
+            text.contains("sessions"),
             "Very narrow should keep core: {text}"
         );
         assert!(

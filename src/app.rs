@@ -1,11 +1,14 @@
 // Application state machine -- pure logic, no TUI dependencies.
 
-use crate::data::model::{ProjectPath, Session, SessionId, SessionSummary};
+use std::path::PathBuf;
+
+use crate::data::model::{ProjectPath, ProjectSummary, Session, SessionId, SessionSummary};
 use crate::data::usage::{TitleBarInfo, UsageData};
 
 /// The view the TUI should render.
 #[derive(Debug, PartialEq, Eq)]
 pub enum View {
+    ProjectList,
     SessionList,
     Conversation(SessionId),
 }
@@ -15,10 +18,16 @@ pub enum View {
 pub enum EmptyState {
     /// No ~/.claude/ directory found.
     NoDirectory,
+    /// No projects with sessions found.
+    NoProjects,
     /// Directory exists but no sessions found.
     NoSessions,
-    /// Session list is loading.
-    Loading,
+    /// Loading projects at startup.
+    LoadingProjects,
+    /// Loading sessions for a selected project.
+    LoadingSessions,
+    /// Loading a single session.
+    LoadingSession,
     /// Selected session has 0 turns.
     EmptySession,
 }
@@ -29,11 +38,13 @@ pub enum Action {
     Quit,
     NavigateUp,
     NavigateDown,
+    SelectProject,
     SelectSession,
     BackToList,
     NextTurn,
     PrevTurn,
     Resize(u16, u16),
+    ProjectsLoaded(Vec<ProjectSummary>),
     SessionsLoaded(Vec<SessionSummary>),
     SessionLoaded(Box<Session>),
     SessionLoadError(String),
@@ -50,12 +61,17 @@ pub enum SideEffect {
     Exit,
     LoadSessionList,
     LoadSession(SessionId),
+    LoadProjectSessions(ProjectPath),
 }
 
 /// Application state.
 pub struct AppState {
     pub view: View,
     pub empty_state: Option<EmptyState>,
+    pub projects: Vec<ProjectSummary>,
+    pub project_selected_index: usize,
+    pub selected_project: Option<ProjectPath>,
+    pub cwd: Option<PathBuf>,
     pub sessions: Vec<SessionSummary>,
     pub selected_index: usize,
     pub show_help: bool,
@@ -77,8 +93,12 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            view: View::SessionList,
-            empty_state: Some(EmptyState::Loading),
+            view: View::ProjectList,
+            empty_state: Some(EmptyState::LoadingProjects),
+            projects: Vec::new(),
+            project_selected_index: 0,
+            selected_project: None,
+            cwd: None,
             sessions: Vec::new(),
             selected_index: 0,
             show_help: false,
@@ -92,23 +112,41 @@ impl AppState {
         }
     }
 
-    /// Group sessions by project, preserving sort order within groups.
-    pub fn grouped_sessions(&self) -> Vec<(&ProjectPath, Vec<&SessionSummary>)> {
-        let mut groups: Vec<(&ProjectPath, Vec<&SessionSummary>)> = Vec::new();
-        for session in &self.sessions {
-            if let Some(group) = groups.iter_mut().find(|(p, _)| **p == session.project) {
-                group.1.push(session);
-            } else {
-                groups.push((&session.project, vec![session]));
-            }
-        }
-        groups
+    pub fn with_cwd(mut self, cwd: Option<PathBuf>) -> Self {
+        self.cwd = cwd;
+        self
     }
 
     /// Pure state machine: process action, return optional side effect.
     pub fn handle_action(&mut self, action: Action) -> Option<SideEffect> {
         match action {
             Action::Quit => Some(SideEffect::Exit),
+
+            Action::ProjectsLoaded(mut projects) => {
+                // Sort: CWD match first, then by last_activity descending.
+                if let Some(ref cwd) = self.cwd {
+                    projects.sort_by(|a, b| {
+                        let a_match = a.path.matches_cwd(cwd);
+                        let b_match = b.path.matches_cwd(cwd);
+                        match (a_match, b_match) {
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            _ => b.last_activity.cmp(&a.last_activity),
+                        }
+                    });
+                } else {
+                    projects.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+                }
+
+                if projects.is_empty() {
+                    self.empty_state = Some(EmptyState::NoProjects);
+                } else {
+                    self.empty_state = None;
+                }
+                self.projects = projects;
+                self.project_selected_index = 0;
+                None
+            }
 
             Action::SessionsLoaded(mut summaries) => {
                 // Sort by last_activity descending (most recent first).
@@ -123,16 +161,21 @@ impl AppState {
                 None
             }
 
-            Action::LoadError(_msg) => {
-                // For M2, all load errors are treated as "no directory" since
-                // that's the most common case. Future milestones may
-                // differentiate error types (permission denied, corrupt data,
-                // etc.) and show more specific guidance.
+            Action::LoadError(msg) => {
                 self.empty_state = Some(EmptyState::NoDirectory);
+                self.last_error = Some(msg);
                 None
             }
 
             Action::NavigateDown => match &self.view {
+                View::ProjectList => {
+                    if !self.projects.is_empty()
+                        && self.project_selected_index < self.projects.len() - 1
+                    {
+                        self.project_selected_index += 1;
+                    }
+                    None
+                }
                 View::SessionList => {
                     if !self.sessions.is_empty() && self.selected_index < self.sessions.len() - 1 {
                         self.selected_index += 1;
@@ -146,6 +189,12 @@ impl AppState {
             },
 
             Action::NavigateUp => match &self.view {
+                View::ProjectList => {
+                    if !self.projects.is_empty() && self.project_selected_index > 0 {
+                        self.project_selected_index -= 1;
+                    }
+                    None
+                }
                 View::SessionList => {
                     if !self.sessions.is_empty() && self.selected_index > 0 {
                         self.selected_index -= 1;
@@ -158,13 +207,27 @@ impl AppState {
                 }
             },
 
+            Action::SelectProject => {
+                if self.projects.is_empty() {
+                    return None;
+                }
+                let project = &self.projects[self.project_selected_index];
+                let path = project.path.clone();
+                self.selected_project = Some(path.clone());
+                self.view = View::SessionList;
+                self.empty_state = Some(EmptyState::LoadingSessions);
+                self.sessions.clear();
+                self.selected_index = 0;
+                Some(SideEffect::LoadProjectSessions(path))
+            }
+
             Action::SelectSession => {
                 if self.sessions.is_empty() {
                     return None;
                 }
                 let id = self.sessions[self.selected_index].id.clone();
                 self.view = View::Conversation(id.clone());
-                self.empty_state = Some(EmptyState::Loading);
+                self.empty_state = Some(EmptyState::LoadingSession);
                 self.current_session = None;
                 self.current_turn_index = 0;
                 self.scroll_offset = 0;
@@ -172,7 +235,19 @@ impl AppState {
             }
 
             Action::BackToList => match &self.view {
-                View::SessionList => Some(SideEffect::Exit),
+                View::ProjectList => Some(SideEffect::Exit),
+                View::SessionList => {
+                    self.view = View::ProjectList;
+                    self.sessions.clear();
+                    self.selected_index = 0;
+                    self.selected_project = None;
+                    self.empty_state = if self.projects.is_empty() {
+                        Some(EmptyState::NoProjects)
+                    } else {
+                        None
+                    };
+                    None
+                }
                 View::Conversation(_) => {
                     self.view = View::SessionList;
                     self.current_session = None;
@@ -259,15 +334,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_app_state_starts_in_session_list_view() {
+    fn new_app_state_starts_in_project_list_view() {
         let state = AppState::new();
-        assert!(matches!(state.view, View::SessionList));
+        assert!(matches!(state.view, View::ProjectList));
     }
 
     #[test]
     fn new_app_state_empty_state_is_loading() {
         let state = AppState::new();
-        assert_eq!(state.empty_state, Some(EmptyState::Loading));
+        assert_eq!(state.empty_state, Some(EmptyState::LoadingProjects));
     }
 
     #[test]
@@ -331,9 +406,27 @@ mod tests {
             .collect()
     }
 
+    fn make_project_summaries(count: usize) -> Vec<ProjectSummary> {
+        use chrono::TimeZone;
+
+        (0..count)
+            .map(|i| ProjectSummary {
+                path: ProjectPath(PathBuf::from(format!("-Users-test-project-{i}"))),
+                display_name: format!("project-{i}"),
+                session_count: i + 1,
+                last_activity: Some(
+                    chrono::Utc
+                        .with_ymd_and_hms(2026, 1, 1 + i as u32, 0, 0, 0)
+                        .unwrap(),
+                ),
+            })
+            .collect()
+    }
+
     #[test]
     fn sessions_loaded_clears_loading_state() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         let summaries = make_summaries(3);
         let effect = state.handle_action(Action::SessionsLoaded(summaries));
         assert!(effect.is_none());
@@ -345,6 +438,7 @@ mod tests {
     #[test]
     fn sessions_loaded_empty_sets_no_sessions() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         let effect = state.handle_action(Action::SessionsLoaded(Vec::new()));
         assert!(effect.is_none());
         assert_eq!(state.empty_state, Some(EmptyState::NoSessions));
@@ -361,6 +455,7 @@ mod tests {
     #[test]
     fn navigate_down_increments_index() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         assert_eq!(state.selected_index, 0);
         let effect = state.handle_action(Action::NavigateDown);
@@ -374,6 +469,7 @@ mod tests {
     #[test]
     fn navigate_down_stops_at_bottom() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(2)));
         state.handle_action(Action::NavigateDown);
         let effect = state.handle_action(Action::NavigateDown);
@@ -385,6 +481,7 @@ mod tests {
     #[test]
     fn navigate_down_single_element_stays_at_zero() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(1)));
         let effect = state.handle_action(Action::NavigateDown);
         assert_eq!(effect, None);
@@ -394,6 +491,7 @@ mod tests {
     #[test]
     fn navigate_up_decrements_index() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         state.handle_action(Action::NavigateDown);
         state.handle_action(Action::NavigateDown);
@@ -405,6 +503,7 @@ mod tests {
     #[test]
     fn navigate_up_stops_at_top() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         let effect = state.handle_action(Action::NavigateUp);
         assert_eq!(effect, None);
@@ -412,8 +511,9 @@ mod tests {
     }
 
     #[test]
-    fn navigate_on_empty_does_nothing() {
+    fn navigate_on_empty_session_list_does_nothing() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(Vec::new()));
         let effect = state.handle_action(Action::NavigateDown);
         assert_eq!(effect, None);
@@ -426,6 +526,7 @@ mod tests {
     #[test]
     fn select_session_returns_load_effect() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         state.handle_action(Action::NavigateDown); // index 1
         let effect = state.handle_action(Action::SelectSession);
@@ -438,6 +539,7 @@ mod tests {
     #[test]
     fn select_session_on_empty_returns_none() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(Vec::new()));
         let effect = state.handle_action(Action::SelectSession);
         assert!(effect.is_none());
@@ -464,10 +566,21 @@ mod tests {
     }
 
     #[test]
-    fn back_to_list_from_session_list_quits() {
+    fn back_to_list_from_project_list_quits() {
         let mut state = AppState::new();
         let effect = state.handle_action(Action::BackToList);
         assert_eq!(effect, Some(SideEffect::Exit));
+    }
+
+    #[test]
+    fn back_to_list_from_session_list_goes_to_project_list() {
+        let mut state = AppState::new();
+        state.view = View::SessionList;
+        state.handle_action(Action::ProjectsLoaded(make_project_summaries(3)));
+        state.view = View::SessionList;
+        let effect = state.handle_action(Action::BackToList);
+        assert_eq!(effect, None);
+        assert_eq!(state.view, View::ProjectList);
     }
 
     #[test]
@@ -482,6 +595,7 @@ mod tests {
     #[test]
     fn sessions_loaded_resets_selected_index_after_navigation() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(5)));
         state.handle_action(Action::NavigateDown);
         state.handle_action(Action::NavigateDown);
@@ -492,19 +606,13 @@ mod tests {
     }
 
     #[test]
-    fn grouped_sessions_empty_returns_empty() {
-        let state = AppState::new();
-        let groups = state.grouped_sessions();
-        assert!(groups.is_empty());
-    }
-
-    #[test]
     fn sessions_sorted_by_last_activity_descending() {
         use crate::data::model::{ProjectPath, TokenUsage};
         use chrono::TimeZone;
         use std::path::PathBuf;
 
         let mut state = AppState::new();
+        state.view = View::SessionList;
         let summaries = vec![
             SessionSummary {
                 id: SessionId("old".to_string()),
@@ -540,6 +648,7 @@ mod tests {
     #[test]
     fn session_loaded_stores_session_and_transitions_to_conversation() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         let session = make_session("sess-1", 3);
         let effect = state.handle_action(Action::SessionLoaded(Box::new(session)));
@@ -713,6 +822,7 @@ mod tests {
     #[test]
     fn select_session_clears_conversation_state() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         // Load a session first to set conversation state.
         let session = make_session("sess-1", 5);
@@ -730,6 +840,7 @@ mod tests {
     #[test]
     fn back_to_list_recomputes_empty_state() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         // Start with no sessions loaded.
         state.handle_action(Action::SessionsLoaded(Vec::new()));
         assert_eq!(state.empty_state, Some(EmptyState::NoSessions));
@@ -744,6 +855,7 @@ mod tests {
     #[test]
     fn back_to_list_recomputes_empty_state_with_sessions() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         state.view = View::Conversation(SessionId("test".to_string()));
         state.handle_action(Action::BackToList);
@@ -786,73 +898,151 @@ mod tests {
         assert!(state.show_tokens);
     }
 
+    // --- ProjectList tests ---
+
+    #[test]
+    fn projects_loaded_with_cwd_match_sorts_cwd_first() {
+        let mut state = AppState::new();
+        state.cwd = Some(PathBuf::from("/Users/test/project-0"));
+        let projects = make_project_summaries(3);
+        state.handle_action(Action::ProjectsLoaded(projects));
+        // project-0 matches CWD, should be first.
+        assert_eq!(state.projects[0].display_name, "project-0");
+    }
+
+    #[test]
+    fn projects_loaded_no_cwd_sorts_by_last_activity_desc() {
+        let mut state = AppState::new();
+        let projects = make_project_summaries(3);
+        state.handle_action(Action::ProjectsLoaded(projects));
+        // Most recent (project-2, Jan 3) should be first.
+        assert_eq!(state.projects[0].display_name, "project-2");
+    }
+
+    #[test]
+    fn projects_loaded_empty_sets_no_projects() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(Vec::new()));
+        assert_eq!(state.empty_state, Some(EmptyState::NoProjects));
+    }
+
+    #[test]
+    fn select_project_returns_load_project_sessions() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(make_project_summaries(3)));
+        let expected_path = state.projects[0].path.clone();
+        let effect = state.handle_action(Action::SelectProject);
+        assert_eq!(
+            effect,
+            Some(SideEffect::LoadProjectSessions(expected_path.clone()))
+        );
+        assert_eq!(state.view, View::SessionList);
+        assert_eq!(state.empty_state, Some(EmptyState::LoadingSessions));
+        assert_eq!(state.selected_project, Some(expected_path));
+    }
+
+    #[test]
+    fn select_project_on_empty_returns_none() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(Vec::new()));
+        let effect = state.handle_action(Action::SelectProject);
+        assert!(effect.is_none());
+    }
+
+    #[test]
+    fn back_from_session_list_preserves_project_selection_index() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(make_project_summaries(3)));
+        state.project_selected_index = 1;
+        state.handle_action(Action::SelectProject);
+        assert!(state.selected_project.is_some());
+        // Now back
+        state.handle_action(Action::BackToList);
+        assert_eq!(state.view, View::ProjectList);
+        assert_eq!(state.project_selected_index, 1);
+        assert!(!state.projects.is_empty());
+        assert_eq!(state.selected_project, None);
+    }
+
+    #[test]
+    fn navigate_down_in_project_list() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(make_project_summaries(3)));
+        assert_eq!(state.project_selected_index, 0);
+        state.handle_action(Action::NavigateDown);
+        assert_eq!(state.project_selected_index, 1);
+        state.handle_action(Action::NavigateDown);
+        assert_eq!(state.project_selected_index, 2);
+        // Stops at bottom.
+        state.handle_action(Action::NavigateDown);
+        assert_eq!(state.project_selected_index, 2);
+    }
+
+    #[test]
+    fn navigate_up_in_project_list() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(make_project_summaries(3)));
+        state.project_selected_index = 2;
+        state.handle_action(Action::NavigateUp);
+        assert_eq!(state.project_selected_index, 1);
+        state.handle_action(Action::NavigateUp);
+        assert_eq!(state.project_selected_index, 0);
+        // Stops at top.
+        state.handle_action(Action::NavigateUp);
+        assert_eq!(state.project_selected_index, 0);
+    }
+
+    #[test]
+    fn navigate_on_empty_project_list_does_nothing() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(Vec::new()));
+        state.handle_action(Action::NavigateDown);
+        assert_eq!(state.project_selected_index, 0);
+        state.handle_action(Action::NavigateUp);
+        assert_eq!(state.project_selected_index, 0);
+    }
+
+    #[test]
+    fn round_trip_project_session_conversation_back() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ProjectsLoaded(make_project_summaries(2)));
+        assert_eq!(state.view, View::ProjectList);
+
+        // Select project
+        state.handle_action(Action::SelectProject);
+        assert_eq!(state.view, View::SessionList);
+
+        // Simulate sessions loaded
+        state.handle_action(Action::SessionsLoaded(make_summaries(2)));
+
+        // Select session
+        state.handle_action(Action::SelectSession);
+        assert!(matches!(state.view, View::Conversation(_)));
+
+        // Back to session list
+        state.handle_action(Action::BackToList);
+        assert_eq!(state.view, View::SessionList);
+
+        // Back to project list
+        state.handle_action(Action::BackToList);
+        assert_eq!(state.view, View::ProjectList);
+
+        // Back from project list exits
+        let effect = state.handle_action(Action::BackToList);
+        assert_eq!(effect, Some(SideEffect::Exit));
+    }
+
     #[test]
     fn select_session_sets_loading_state() {
         let mut state = AppState::new();
+        state.view = View::SessionList;
         state.handle_action(Action::SessionsLoaded(make_summaries(3)));
         state.handle_action(Action::SelectSession);
-        // After SelectSession, the view should transition to Conversation
-        // with a Loading empty state while the session loads.
         assert_eq!(
             state.view,
             View::Conversation(SessionId("session-0".to_string()))
         );
-        assert_eq!(state.empty_state, Some(EmptyState::Loading));
-    }
-
-    #[test]
-    fn grouped_sessions_returns_project_groups() {
-        use crate::data::model::{ProjectPath, TokenUsage};
-        use std::path::PathBuf;
-
-        let mut state = AppState::new();
-        let summaries = vec![
-            SessionSummary {
-                id: SessionId("s1".to_string()),
-                project: ProjectPath(PathBuf::from("proj-a")),
-                file_path: PathBuf::from("/tmp/s1.jsonl"),
-                file_size: 100,
-                last_prompt: None,
-                started_at: None,
-                last_activity: None,
-                turn_count: 1,
-                total_tokens: TokenUsage::default(),
-                git_branch: None,
-            },
-            SessionSummary {
-                id: SessionId("s2".to_string()),
-                project: ProjectPath(PathBuf::from("proj-b")),
-                file_path: PathBuf::from("/tmp/s2.jsonl"),
-                file_size: 100,
-                last_prompt: None,
-                started_at: None,
-                last_activity: None,
-                turn_count: 1,
-                total_tokens: TokenUsage::default(),
-                git_branch: None,
-            },
-            SessionSummary {
-                id: SessionId("s3".to_string()),
-                project: ProjectPath(PathBuf::from("proj-a")),
-                file_path: PathBuf::from("/tmp/s3.jsonl"),
-                file_size: 100,
-                last_prompt: None,
-                started_at: None,
-                last_activity: None,
-                turn_count: 1,
-                total_tokens: TokenUsage::default(),
-                git_branch: None,
-            },
-        ];
-        state.handle_action(Action::SessionsLoaded(summaries));
-        let groups = state.grouped_sessions();
-        assert_eq!(groups.len(), 2);
-        // proj-a has 2 sessions, proj-b has 1
-        let proj_a = groups
-            .iter()
-            .find(|(p, _)| p.0.as_os_str() == "proj-a")
-            .unwrap();
-        assert_eq!(proj_a.1.len(), 2);
+        assert_eq!(state.empty_state, Some(EmptyState::LoadingSession));
     }
 
     #[test]
