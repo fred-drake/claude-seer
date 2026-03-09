@@ -1,6 +1,6 @@
 # Claude Seer - Product Roadmap
 
-Last Updated: 2026-03-08 | Version: 0.1.0-planning (post-review)
+Last Updated: 2026-03-09 | Version: 0.1.0 (all milestones complete)
 
 ## Vision
 
@@ -136,8 +136,9 @@ out or quit. Use `--path /custom/path` for non-standard installs.
 - No subagent/team visualization — subagent tool calls appear as regular
   tool calls without tree structure
 - No SSH remote access — local `~/.claude/` only
-- No user-facing error diagnostics (miette) — errors are logged, not
-  displayed with rich context
+- No rich error diagnostics (miette) — basic error/warning messages
+  appear in the status bar, but miette-style rich context (source
+  snippets, help text, related errors) is not exposed to the user
 
 ---
 
@@ -266,7 +267,7 @@ an async variant or wrapper.
 | Session discovery + empty states | Done | 0.1.0 |
 | Conversation viewer + turn nav | Done | 0.1.0 |
 | Token usage display | Done | 0.1.0 |
-| Application shell | Planned | 0.1.0 |
+| Application shell | Done | 0.1.0 |
 | Tool detail view | Planned | 0.2.0 |
 | Within-session search | Planned | 0.2.0 |
 | Token attribution (7 categories) | Planned | 0.3.0 |
@@ -296,14 +297,12 @@ relevant features are implemented.
 - **`tool_summary()` helper**: ~~Each tool type needs a one-line summary
   for inline display.~~ **Done in M3** — implemented in
   `tui/widgets/conversation.rs` with per-tool formatting.
-- **`parse_warnings` on Session**: Store a `Vec<ParseWarning>` on
-  `Session` for display in the TUI status bar (e.g., "3 orphaned
-  records skipped").
-- **Log file security**: Default log path `/tmp/claude-seer.log` is
-  world-readable. Consider using `$XDG_STATE_HOME` or document the
-  security implication in `--help` output.
-- **CLI env var in help**: `CLAUDE_SEER_PATH` and `CLAUDE_SEER_LOG_FILE`
-  env vars should appear in `--help` output via clap's `env` attribute.
+- ~~**`parse_warnings` on Session**~~: **Done in M5** -- displayed in
+  conversation status bar with singular/plural grammar.
+- ~~**Log file security**~~: **Done in M5** -- documented in `--help`
+  via clap `long_help` on `--log-file`.
+- ~~**CLI env var in help**~~: **Done in M5** -- `CLAUDE_SEER_PATH` and
+  `CLAUDE_SEER_LOG_FILE` appear via clap `env` attribute.
 - **Future CLI flags**: `--session <UUID>` (open directly),
   `--project <PATH>` (filter to project), `--no-color` (disable
   colors). Not needed for v0.1.
@@ -334,10 +333,8 @@ relevant features are implemented.
   `u16`. Conversations with >65535 rendered lines would silently
   wrap. Use `u16::try_from().unwrap_or(u16::MAX)` when this becomes
   a realistic scenario.
-- **View-aware help text**: Help overlay shows j/k as "Move down /
-  Scroll down" for both views without distinguishing session
-  selection vs. line scrolling. Refine when view-specific help is
-  implemented.
+- ~~**View-aware help text**~~: **Done in M5** -- help overlay shows
+  view-specific descriptions (select vs scroll, Enter vs Esc context).
 - **Vim navigation keys**: `g`/`G` (first/last), `Ctrl-d`/`Ctrl-u`
   (half-page scroll), `Home`/`End` are not yet implemented. Track
   for a future keybinding enhancement pass.
@@ -345,15 +342,14 @@ relevant features are implemented.
   renders ALL turns every frame. For large sessions (hundreds of
   turns), consider rendering only visible turns or caching line
   output with invalidation on turn change/scroll.
-- **Status bar parse_warnings**: Display `parse_warnings.len()` in
-  the status bar when viewing a session (e.g., "3 warnings").
+- ~~**Status bar parse_warnings**~~: **Done in M5** -- see above.
 - **`build_turn_lines` parameter count**: Now has 5 parameters
   (`turn`, `total_turns`, `is_current`, `show_tokens`, `cumulative`).
   Consider an options struct if more display flags are added (e.g.,
   `show_thinking`, `show_tool_details` in v0.2+).
-- **Status bar truncation at narrow terminals**: The conversation
-  status bar (~75 chars) clips ungracefully at <80 columns. Consider
-  progressive disclosure of keybinding hints based on terminal width.
+- ~~**Status bar truncation at narrow terminals**~~: **Done in M5** --
+  progressive disclosure drops hints from right (? help, Esc, t,
+  j/k, n/N) based on terminal width.
 - **Cumulative token category breakdown**: The cumulative line shows
   in/out/cache totals. A per-category attribution breakdown
   (system prompt, tool I/O, thinking, etc.) fits v0.3 token
@@ -378,3 +374,10 @@ relevant features are implemented.
 - **Lighter HTTP client**: `ureq` pulls ~11 transitive dependencies
   for a single GET call. If binary size becomes a concern, consider
   `minreq` or shelling out to `curl`.
+- **Progressive disclosure hint order**: The hint drop order is
+  hardcoded in both session list and conversation status bars.
+  Consider making it configurable if more hints are added in future
+  milestones.
+- **Warning detail view**: Allow inspecting individual parse warnings
+  (line number, reason, etc.) rather than just showing a count.
+  Natural fit for v0.2 alongside tool detail views.

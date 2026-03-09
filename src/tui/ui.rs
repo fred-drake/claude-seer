@@ -48,6 +48,6 @@ pub fn render(frame: &mut Frame, state: &AppState) {
 
     // Help overlay on top of everything.
     if state.show_help {
-        help::render_help(frame, area);
+        help::render_help(frame, area, &state.view);
     }
 }

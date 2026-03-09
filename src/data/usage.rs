@@ -206,13 +206,12 @@ mod tests {
         let window: UsageWindow = serde_json::from_str(json).unwrap();
         assert!((window.utilization - 42.5).abs() < f64::EPSILON);
         assert!(window.resets_at.is_some());
-        assert_eq!(
+        assert!(
             window
                 .resets_at
                 .unwrap()
                 .to_rfc3339()
-                .contains("2026-03-08"),
-            true
+                .contains("2026-03-08")
         );
     }
 
