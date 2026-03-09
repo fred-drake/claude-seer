@@ -88,7 +88,7 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
                 }
 
                 let token_total = session.token_totals.total();
-                let token_part = if state.show_tokens && token_total > 0 {
+                let token_part = if state.display.show_tokens && token_total > 0 {
                     format!(" | {} tokens", format_tokens(token_total))
                 } else {
                     String::new()
@@ -120,6 +120,8 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
                     &[
                         " | n/N: jump",
                         " | j/k: scroll",
+                        " | o: tools",
+                        " | T: thinking",
                         " | t: tokens",
                         " | Esc: back",
                         " | ? help",
@@ -128,6 +130,8 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
                     &[
                         " | n/N: jump",
                         " | j/k: scroll",
+                        " | o: tools",
+                        " | T: thinking",
                         " | Esc: back",
                         " | ? help",
                     ]
@@ -236,7 +240,7 @@ mod tests {
         );
         state.current_session = Some(session);
         state.view = View::Conversation(SessionId("test".to_string()));
-        state.show_tokens = true;
+        state.display.show_tokens = true;
 
         let text = build_status_text(&state);
         assert!(
@@ -259,7 +263,7 @@ mod tests {
         );
         state.current_session = Some(session);
         state.view = View::Conversation(SessionId("test".to_string()));
-        state.show_tokens = false;
+        state.display.show_tokens = false;
 
         let text = build_status_text(&state);
         assert!(
@@ -333,7 +337,7 @@ mod tests {
         let session = make_session_with_tokens(2, TokenUsage::default());
         state.current_session = Some(session);
         state.view = View::Conversation(SessionId("test".to_string()));
-        state.show_tokens = true;
+        state.display.show_tokens = true;
 
         let text = build_status_text(&state);
         assert!(
@@ -452,7 +456,7 @@ mod tests {
         state.current_session = Some(session);
         state.view = View::Conversation(SessionId("test".to_string()));
 
-        let text = build_status_text_for_width(&state, 30);
+        let text = build_status_text_for_width(&state, 15);
         assert!(
             text.contains("Turn 1/3"),
             "Very narrow should keep Turn info: {text}"

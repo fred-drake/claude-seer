@@ -32,6 +32,21 @@ pub enum EmptyState {
     EmptySession,
 }
 
+/// Display options for the conversation view.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayOptions {
+    pub show_tokens: bool,
+    pub show_tools: bool,
+    pub show_thinking: bool,
+}
+
+impl DisplayOptions {
+    /// Whether any detail flag is enabled (used to decide header/label visibility).
+    pub fn any_detail_enabled(&self) -> bool {
+        self.show_tokens || self.show_tools || self.show_thinking
+    }
+}
+
 /// All possible user/system actions.
 #[derive(Debug)]
 pub enum Action {
@@ -51,6 +66,8 @@ pub enum Action {
     LoadError(String),
     ToggleHelp,
     ToggleTokens,
+    ToggleTools,
+    ToggleThinking,
     VersionLoaded(String),
     UsageLoaded(UsageData),
 }
@@ -75,7 +92,7 @@ pub struct AppState {
     pub sessions: Vec<SessionSummary>,
     pub selected_index: usize,
     pub show_help: bool,
-    pub show_tokens: bool,
+    pub display: DisplayOptions,
     pub terminal_size: (u16, u16),
     pub current_session: Option<Session>,
     pub current_turn_index: usize,
@@ -102,7 +119,7 @@ impl AppState {
             sessions: Vec::new(),
             selected_index: 0,
             show_help: false,
-            show_tokens: true,
+            display: DisplayOptions::default(),
             terminal_size: (80, 24),
             current_session: None,
             current_turn_index: 0,
@@ -268,7 +285,17 @@ impl AppState {
             }
 
             Action::ToggleTokens => {
-                self.show_tokens = !self.show_tokens;
+                self.display.show_tokens = !self.display.show_tokens;
+                None
+            }
+
+            Action::ToggleTools => {
+                self.display.show_tools = !self.display.show_tools;
+                None
+            }
+
+            Action::ToggleThinking => {
+                self.display.show_thinking = !self.display.show_thinking;
                 None
             }
 
@@ -881,21 +908,60 @@ mod tests {
     }
 
     #[test]
-    fn show_tokens_defaults_to_true() {
+    fn display_options_default_values() {
+        let opts = DisplayOptions::default();
+        assert!(!opts.show_tokens);
+        assert!(!opts.show_tools);
+        assert!(!opts.show_thinking);
+    }
+
+    #[test]
+    fn show_tokens_defaults_to_false() {
         let state = AppState::new();
-        assert!(state.show_tokens);
+        assert!(!state.display.show_tokens);
     }
 
     #[test]
     fn toggle_tokens_flips_show_tokens() {
         let mut state = AppState::new();
-        assert!(state.show_tokens);
+        assert!(!state.display.show_tokens);
         let effect = state.handle_action(Action::ToggleTokens);
         assert_eq!(effect, None);
-        assert!(!state.show_tokens);
+        assert!(state.display.show_tokens);
         let effect = state.handle_action(Action::ToggleTokens);
         assert_eq!(effect, None);
-        assert!(state.show_tokens);
+        assert!(!state.display.show_tokens);
+    }
+
+    #[test]
+    fn toggle_tools_flips_display_show_tools() {
+        let mut state = AppState::new();
+        assert!(!state.display.show_tools);
+        state.handle_action(Action::ToggleTools);
+        assert!(state.display.show_tools);
+        state.handle_action(Action::ToggleTools);
+        assert!(!state.display.show_tools);
+    }
+
+    #[test]
+    fn toggle_thinking_flips_display_show_thinking() {
+        let mut state = AppState::new();
+        assert!(!state.display.show_thinking);
+        state.handle_action(Action::ToggleThinking);
+        assert!(state.display.show_thinking);
+        state.handle_action(Action::ToggleThinking);
+        assert!(!state.display.show_thinking);
+    }
+
+    #[test]
+    fn toggle_tools_is_independent_of_toggle_tokens() {
+        let mut state = AppState::new();
+        state.handle_action(Action::ToggleTools);
+        assert!(state.display.show_tools);
+        assert!(!state.display.show_tokens);
+        state.handle_action(Action::ToggleTokens);
+        assert!(state.display.show_tools);
+        assert!(state.display.show_tokens);
     }
 
     // --- ProjectList tests ---

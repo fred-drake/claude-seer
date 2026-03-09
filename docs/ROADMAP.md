@@ -1,6 +1,6 @@
 # Claude Seer - Product Roadmap
 
-Last Updated: 2026-03-09 | Version: 0.1.0 (post-review fixes applied)
+Last Updated: 2026-03-09 | Version: 0.1.1 (chat-style conversation redesign)
 
 ## Vision
 
@@ -140,6 +140,30 @@ out or quit. Use `--path /custom/path` for non-standard installs.
 - No rich error diagnostics (miette) — basic error/warning messages
   appear in the status bar, but miette-style rich context (source
   snippets, help text, related errors) is not exposed to the user
+
+---
+
+### v0.1.1 - Chat-Style Conversation Redesign (IMPLEMENTED)
+
+**What changed:** The conversation view was redesigned from a flat,
+label-heavy layout to a modern chat-style display. User messages are
+right-aligned with Cyan `▌` borders, Claude messages are left-aligned
+with Green `▌` borders. The clean default hides tool calls, thinking
+blocks, and token counts — showing only final text output.
+
+**New keybindings:**
+- `o` — Toggle tool call visibility (icons: `◆` success, `✗` error,
+  `◇` pending)
+- `T` — Toggle thinking block visibility (icon: `○`)
+- `t` — Toggle token display (unchanged, but default is now OFF)
+
+**Architecture changes:**
+- `DisplayOptions` struct in `app.rs` replaces standalone `show_tokens`
+- `TurnRenderContext` struct in `conversation.rs` replaces parameter list
+- `bubble_width()` + `word_wrap()` for responsive text layout
+- Headers/labels hidden in clean mode, shown when any detail flag is on
+- Chat alignment disabled at terminal width < 50 for graceful degradation
+- `unicode-width` added as direct dependency for column-accurate wrapping
 
 ---
 
