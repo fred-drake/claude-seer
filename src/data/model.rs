@@ -87,7 +87,7 @@ impl ProjectPath {
             // Root "/" normalizes to "", encodes to "-"
             return self.0.to_string_lossy() == "-";
         }
-        let encoded = normalized.replace('/', "-").replace('.', "-");
+        let encoded = normalized.replace(['/', '.'], "-");
         self.0.to_string_lossy() == encoded
     }
 }
@@ -374,7 +374,7 @@ pub struct ProjectSummary {
     pub last_activity: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Format a DateTime<Utc> as human-readable relative time.
+/// Format a `DateTime<Utc>` as human-readable relative time.
 ///
 /// Returns strings like "just now", "5 min ago", "2 hours ago", "3 days ago",
 /// "2 weeks ago", "1 month ago", "1 year ago".
