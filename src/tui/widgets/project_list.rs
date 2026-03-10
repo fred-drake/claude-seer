@@ -122,6 +122,34 @@ fn format_project_lines(
     lines
 }
 
+/// Shorten a decoded path for display — replace home dir with ~, left-truncate if >60 chars.
+fn shorten_path(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    let shortened = if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(home_str.as_ref()) {
+            format!("~{rest}")
+        } else {
+            s.to_string()
+        }
+    } else {
+        s.to_string()
+    };
+
+    if shortened.len() > 60 {
+        // Find a safe char boundary for truncation (avoid panic on multi-byte UTF-8).
+        let target = shortened.len() - 57;
+        let safe_start = shortened
+            .char_indices()
+            .map(|(i, _)| i)
+            .find(|&i| i >= target)
+            .unwrap_or(target);
+        format!("...{}", &shortened[safe_start..])
+    } else {
+        shortened
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,33 +237,5 @@ mod tests {
         let first_line_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(first_line_text.contains("seer"));
         assert!(first_line_text.contains("/Users/fdrake/Source/claude/seer"));
-    }
-}
-
-/// Shorten a decoded path for display — replace home dir with ~, left-truncate if >60 chars.
-fn shorten_path(path: &std::path::Path) -> String {
-    let s = path.to_string_lossy();
-    let shortened = if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if let Some(rest) = s.strip_prefix(home_str.as_ref()) {
-            format!("~{rest}")
-        } else {
-            s.to_string()
-        }
-    } else {
-        s.to_string()
-    };
-
-    if shortened.len() > 60 {
-        // Find a safe char boundary for truncation (avoid panic on multi-byte UTF-8).
-        let target = shortened.len() - 57;
-        let safe_start = shortened
-            .char_indices()
-            .map(|(i, _)| i)
-            .find(|&i| i >= target)
-            .unwrap_or(target);
-        format!("...{}", &shortened[safe_start..])
-    } else {
-        shortened
     }
 }
