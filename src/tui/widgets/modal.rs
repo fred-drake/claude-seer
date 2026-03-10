@@ -9,7 +9,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::app::{AppState, ModalContent};
 use crate::data::model::{ContentBlock, Turn, UserContent};
 
+use super::conversation::{THINKING_ICON, tool_icon, tool_summary};
 use super::layout::centered_rect;
+use super::text_utils::truncate_end;
 
 /// Extract the full text content for a modal based on modal type and current turn.
 fn extract_modal_text(turn: &Turn, modal: &ModalContent) -> String {
@@ -48,15 +50,19 @@ fn extract_modal_text(turn: &Turn, modal: &ModalContent) -> String {
                 match block {
                     ContentBlock::Text(text) => parts.push(text.clone()),
                     ContentBlock::Thinking { text } => {
-                        parts.push(format!("[Thinking] {text}"));
+                        parts.push(format!("{THINKING_ICON} {text}"));
                     }
                     ContentBlock::ToolUse(tc) => {
-                        let status = match &tc.result {
-                            Some(r) if r.is_error => "error",
-                            Some(_) => "done",
-                            None => "pending",
-                        };
-                        parts.push(format!("[Tool: {} ({})]", tc.name, status));
+                        let icon = tool_icon(&tc.result);
+                        let summary = tool_summary(&tc.name, &tc.input);
+                        let mut tool_text = format!("{icon} {}  {summary}", tc.name);
+                        if let Some(ref result) = tc.result
+                            && !result.content.is_empty()
+                        {
+                            tool_text
+                                .push_str(&format!("\n{}", truncate_end(&result.content, 500)));
+                        }
+                        parts.push(tool_text);
                     }
                 }
             }
@@ -125,10 +131,7 @@ pub fn render_modal(frame: &mut Frame, area: Rect, state: &AppState) {
     let turn = &session.turns[state.current_turn_index];
     let text = extract_modal_text(turn, modal);
 
-    let is_tool_result = matches!(
-        &turn.user_message.content,
-        UserContent::ToolResults(_)
-    );
+    let is_tool_result = matches!(&turn.user_message.content, UserContent::ToolResults(_));
     let title = match modal {
         ModalContent::User if is_tool_result => " Tool Result ",
         ModalContent::User => " User Message ",
@@ -269,7 +272,10 @@ mod tests {
             events: Vec::new(),
         };
         let text = extract_modal_text(&turn, &ModalContent::Claude);
-        assert!(text.contains("[Thinking] Let me think"));
+        assert!(
+            text.contains("○ Let me think"),
+            "Expected thinking icon, got: {text}"
+        );
         assert!(text.contains("Here is my answer"));
     }
 
@@ -305,8 +311,86 @@ mod tests {
         };
         let text = extract_modal_text(&turn, &ModalContent::Claude);
         assert!(
-            text.contains("[Tool: Read (done)]"),
-            "Expected tool summary, got: {text}"
+            text.contains("◆ Read  /tmp/test.rs"),
+            "Expected rich tool summary, got: {text}"
+        );
+        assert!(
+            text.contains("file contents"),
+            "Expected tool result content, got: {text}"
+        );
+    }
+
+    #[test]
+    fn extract_claude_with_error_tool() {
+        let turn = Turn {
+            index: 0,
+            user_message: UserMessage {
+                id: MessageId("msg-1".to_string()),
+                timestamp: chrono::Utc::now(),
+                content: UserContent::Text("hi".to_string()),
+            },
+            assistant_response: Some(AssistantResponse {
+                id: MessageId("msg-2".to_string()),
+                model: "claude-sonnet-4-20250514".to_string(),
+                timestamp: chrono::Utc::now(),
+                content_blocks: vec![ContentBlock::ToolUse(ToolCall {
+                    id: "tc-1".to_string(),
+                    name: ToolName::Bash,
+                    input: serde_json::json!({"command": "ls /nonexistent"}),
+                    result: Some(ToolResult {
+                        tool_use_id: "tc-1".to_string(),
+                        content: "No such file or directory".to_string(),
+                        is_error: true,
+                    }),
+                })],
+                usage: TokenUsage::default(),
+                stop_reason: None,
+            }),
+            duration: None,
+            is_complete: true,
+            events: Vec::new(),
+        };
+        let text = extract_modal_text(&turn, &ModalContent::Claude);
+        assert!(
+            text.contains("✗ Bash  ls /nonexistent"),
+            "Expected error tool icon, got: {text}"
+        );
+        assert!(
+            text.contains("No such file or directory"),
+            "Expected error content, got: {text}"
+        );
+    }
+
+    #[test]
+    fn extract_claude_with_pending_tool() {
+        let turn = Turn {
+            index: 0,
+            user_message: UserMessage {
+                id: MessageId("msg-1".to_string()),
+                timestamp: chrono::Utc::now(),
+                content: UserContent::Text("hi".to_string()),
+            },
+            assistant_response: Some(AssistantResponse {
+                id: MessageId("msg-2".to_string()),
+                model: "claude-sonnet-4-20250514".to_string(),
+                timestamp: chrono::Utc::now(),
+                content_blocks: vec![ContentBlock::ToolUse(ToolCall {
+                    id: "tc-1".to_string(),
+                    name: ToolName::Read,
+                    input: serde_json::json!({"file_path": "/tmp/file.txt"}),
+                    result: None,
+                })],
+                usage: TokenUsage::default(),
+                stop_reason: None,
+            }),
+            duration: None,
+            is_complete: true,
+            events: Vec::new(),
+        };
+        let text = extract_modal_text(&turn, &ModalContent::Claude);
+        assert!(
+            text.contains("◇ Read  /tmp/file.txt"),
+            "Expected pending tool icon, got: {text}"
         );
     }
 

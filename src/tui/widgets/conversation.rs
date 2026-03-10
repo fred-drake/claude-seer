@@ -10,14 +10,24 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, DisplayOptions};
 use crate::data::model::{
-    ContentBlock, Session, TokenUsage, ToolName, Turn, UserContent, format_tokens,
+    ContentBlock, Session, TokenUsage, ToolName, ToolResult, Turn, UserContent, format_tokens,
 };
 
 use super::text_utils::truncate_end;
 
-const TOOL_ICON_SUCCESS: &str = "◆";
-const TOOL_ICON_ERROR: &str = "✗";
-const TOOL_ICON_PENDING: &str = "◇";
+pub(crate) const TOOL_ICON_SUCCESS: &str = "◆";
+pub(crate) const TOOL_ICON_ERROR: &str = "✗";
+pub(crate) const TOOL_ICON_PENDING: &str = "◇";
+pub(crate) const THINKING_ICON: &str = "○";
+
+/// Select the appropriate icon for a tool call based on its result status.
+pub(crate) fn tool_icon(result: &Option<ToolResult>) -> &'static str {
+    match result {
+        Some(r) if r.is_error => TOOL_ICON_ERROR,
+        Some(_) => TOOL_ICON_SUCCESS,
+        None => TOOL_ICON_PENDING,
+    }
+}
 
 /// Context passed to `build_turn_lines` to avoid a long parameter list.
 struct TurnRenderContext<'a> {
@@ -290,10 +300,7 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
 
     if has_user_bubble {
         // Label -- right-aligned above the bubble.
-        let is_tool_result = matches!(
-            &turn.user_message.content,
-            UserContent::ToolResults(_)
-        );
+        let is_tool_result = matches!(&turn.user_message.content, UserContent::ToolResults(_));
         let label_text = if is_tool_result {
             "Tool Result:"
         } else {
@@ -353,7 +360,7 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                         let wrapped = word_wrap(text, content_width.saturating_sub(4));
                         for wline in wrapped {
                             bubble_content.push(BubbleLine {
-                                text: format!("  \u{25CB} {wline}"),
+                                text: format!("  {THINKING_ICON} {wline}"),
                                 style: Style::default().fg(Color::DarkGray),
                             });
                         }
@@ -362,16 +369,7 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                 ContentBlock::ToolUse(tc) => {
                     tool_count += 1;
                     if ctx.display.show_tools {
-                        let icon = match &tc.result {
-                            Some(result) => {
-                                if result.is_error {
-                                    TOOL_ICON_ERROR
-                                } else {
-                                    TOOL_ICON_SUCCESS
-                                }
-                            }
-                            None => TOOL_ICON_PENDING,
-                        };
+                        let icon = tool_icon(&tc.result);
                         let summary = tool_summary(&tc.name, &tc.input);
                         bubble_content.push(BubbleLine {
                             text: format!("  {icon} {}  {summary}", tc.name),
@@ -493,10 +491,7 @@ fn user_content_text(content: &UserContent, show_tools: bool) -> String {
             if show_tools {
                 for r in tool_results {
                     if r.is_error {
-                        parts.push(format!(
-                            "[Error] {}",
-                            truncate_end(&r.content, 80)
-                        ));
+                        parts.push(format!("[Error] {}", truncate_end(&r.content, 80)));
                     } else {
                         parts.push(truncate_end(&r.content, 80));
                     }
@@ -508,7 +503,7 @@ fn user_content_text(content: &UserContent, show_tools: bool) -> String {
 }
 
 /// Generate a one-line summary for a tool call.
-fn tool_summary(name: &ToolName, input: &serde_json::Value) -> String {
+pub(crate) fn tool_summary(name: &ToolName, input: &serde_json::Value) -> String {
     match name {
         ToolName::Read | ToolName::Edit | ToolName::Write => input
             .get("file_path")
