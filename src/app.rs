@@ -77,6 +77,13 @@ impl DisplayOptions {
     }
 }
 
+/// Which modal overlay is showing.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ModalContent {
+    User,
+    Claude,
+}
+
 /// All possible user/system actions.
 #[derive(Debug)]
 pub enum Action {
@@ -88,6 +95,11 @@ pub enum Action {
     BackToList,
     NextTurn,
     PrevTurn,
+    ShowUserModal,
+    ShowClaudeModal,
+    DismissModal,
+    ModalScrollDown,
+    ModalScrollUp,
     Resize(u16, u16),
     ProjectsLoaded(Vec<ProjectSummary>),
     SessionsLoaded(Vec<SessionSummary>),
@@ -129,6 +141,8 @@ pub struct AppState {
     pub scroll_offset: usize,
     pub last_error: Option<String>,
     pub title_bar: TitleBarInfo,
+    pub modal: Option<ModalContent>,
+    pub modal_scroll: usize,
 }
 
 impl Default for AppState {
@@ -156,6 +170,8 @@ impl AppState {
             scroll_offset: 0,
             last_error: None,
             title_bar: TitleBarInfo::new(),
+            modal: None,
+            modal_scroll: 0,
         }
     }
 
@@ -392,6 +408,34 @@ impl AppState {
 
             Action::UsageLoaded(usage) => {
                 self.title_bar.usage = Some(usage);
+                None
+            }
+
+            Action::ShowUserModal => {
+                self.modal = Some(ModalContent::User);
+                self.modal_scroll = 0;
+                None
+            }
+
+            Action::ShowClaudeModal => {
+                self.modal = Some(ModalContent::Claude);
+                self.modal_scroll = 0;
+                None
+            }
+
+            Action::DismissModal => {
+                self.modal = None;
+                self.modal_scroll = 0;
+                None
+            }
+
+            Action::ModalScrollDown => {
+                self.modal_scroll = self.modal_scroll.saturating_add(1);
+                None
+            }
+
+            Action::ModalScrollUp => {
+                self.modal_scroll = self.modal_scroll.saturating_sub(1);
                 None
             }
         }
@@ -1160,6 +1204,86 @@ mod tests {
         let effect = state.handle_action(Action::VersionLoaded("2.1.71".to_string()));
         assert_eq!(effect, None);
         assert_eq!(state.title_bar.claude_version, Some("2.1.71".to_string()));
+    }
+
+    #[test]
+    fn new_app_state_modal_is_none() {
+        let state = AppState::new();
+        assert_eq!(state.modal, None);
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn show_user_modal_sets_modal_state() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        let effect = state.handle_action(Action::ShowUserModal);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal, Some(ModalContent::User));
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn show_claude_modal_sets_modal_state() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        let effect = state.handle_action(Action::ShowClaudeModal);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal, Some(ModalContent::Claude));
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn dismiss_modal_clears_modal_state() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        state.modal_scroll = 5;
+        let effect = state.handle_action(Action::DismissModal);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal, None);
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn modal_scroll_down_increments() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        let effect = state.handle_action(Action::ModalScrollDown);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal_scroll, 1);
+        state.handle_action(Action::ModalScrollDown);
+        assert_eq!(state.modal_scroll, 2);
+    }
+
+    #[test]
+    fn modal_scroll_up_decrements_saturating() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        state.modal_scroll = 3;
+        let effect = state.handle_action(Action::ModalScrollUp);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal_scroll, 2);
+    }
+
+    #[test]
+    fn modal_scroll_up_stops_at_zero() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        state.modal_scroll = 0;
+        state.handle_action(Action::ModalScrollUp);
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn show_user_modal_resets_scroll() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.modal_scroll = 10;
+        state.handle_action(Action::ShowUserModal);
+        assert_eq!(state.modal_scroll, 0);
     }
 
     #[test]

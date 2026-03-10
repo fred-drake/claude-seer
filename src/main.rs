@@ -137,7 +137,7 @@ fn main() -> miette::Result<()> {
             AppEvent::Terminal(Event::Key(key)) => {
                 // Only handle key press events (not release/repeat).
                 if key.kind == KeyEventKind::Press {
-                    map_key_to_action(key, app.show_help, &app.view)
+                    map_key_to_action(key, app.show_help, &app.view, app.modal.is_some())
                 } else {
                     None
                 }

@@ -15,7 +15,7 @@ fn jk_descriptions(view: &View) -> (&'static str, &'static str) {
     match view {
         View::ProjectList => ("Select next project", "Select previous project"),
         View::SessionList => ("Select next session", "Select previous session"),
-        View::Conversation(_) => ("Scroll down", "Scroll up"),
+        View::Conversation(_) => ("Next turn", "Previous turn"),
     }
 }
 
@@ -68,6 +68,10 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
         }
         View::Conversation(_) => {
             lines.push(Line::from(vec![
+                Span::styled("  Down/Up    ", Style::default().fg(Color::Yellow)),
+                Span::raw("Scroll down / Scroll up"),
+            ]));
+            lines.push(Line::from(vec![
                 Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
                 Span::raw("Back to sessions"),
             ]));
@@ -77,12 +81,12 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
                 Style::default().add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(vec![
-                Span::styled("  n          ", Style::default().fg(Color::Yellow)),
-                Span::raw("Next turn"),
+                Span::styled("  u          ", Style::default().fg(Color::Yellow)),
+                Span::raw("View user message"),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("  N          ", Style::default().fg(Color::Yellow)),
-                Span::raw("Previous turn"),
+                Span::styled("  c          ", Style::default().fg(Color::Yellow)),
+                Span::raw("View claude response"),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  t          ", Style::default().fg(Color::Yellow)),
@@ -211,27 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_help_shows_scroll_down() {
-        let view = View::Conversation(SessionId("test".to_string()));
-        let text = help_text(&view);
-        assert!(
-            text.contains("Scroll down"),
-            "Expected 'Scroll down', got:\n{text}"
-        );
-    }
-
-    #[test]
-    fn conversation_help_shows_scroll_up() {
-        let view = View::Conversation(SessionId("test".to_string()));
-        let text = help_text(&view);
-        assert!(
-            text.contains("Scroll up"),
-            "Expected 'Scroll up', got:\n{text}"
-        );
-    }
-
-    #[test]
-    fn conversation_help_shows_turn_navigation() {
+    fn conversation_help_shows_jk_turn_navigation() {
         let view = View::Conversation(SessionId("test".to_string()));
         let text = help_text(&view);
         assert!(
@@ -241,6 +225,34 @@ mod tests {
         assert!(
             text.contains("Previous turn"),
             "Expected 'Previous turn', got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn conversation_help_shows_arrow_scroll() {
+        let view = View::Conversation(SessionId("test".to_string()));
+        let text = help_text(&view);
+        assert!(
+            text.contains("Scroll down"),
+            "Expected 'Scroll down', got:\n{text}"
+        );
+        assert!(
+            text.contains("Scroll up"),
+            "Expected 'Scroll up', got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn conversation_help_shows_modal_keys() {
+        let view = View::Conversation(SessionId("test".to_string()));
+        let text = help_text(&view);
+        assert!(
+            text.contains("View user message"),
+            "Expected 'View user message', got:\n{text}"
+        );
+        assert!(
+            text.contains("View claude response"),
+            "Expected 'View claude response', got:\n{text}"
         );
     }
 

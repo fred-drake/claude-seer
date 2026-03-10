@@ -165,7 +165,12 @@ fn build_conversation_lines(
             Color::DarkGray
         };
         let gutter_style = Style::default().fg(gutter_color);
-        let gutter_line_style = Style::default().fg(Color::DarkGray);
+        let gutter_line_color = if ctx.is_current {
+            Color::Green
+        } else {
+            Color::DarkGray
+        };
+        let gutter_line_style = Style::default().fg(gutter_line_color);
 
         for (j, mut line) in turn_lines.into_iter().enumerate() {
             let number_part = if j == 0 {
@@ -173,10 +178,7 @@ fn build_conversation_lines(
             } else {
                 Span::styled(gutter_blank.clone(), Style::default())
             };
-            let mut new_spans = vec![
-                number_part,
-                Span::styled(" \u{2502} ", gutter_line_style),
-            ];
+            let mut new_spans = vec![number_part, Span::styled(" \u{2502} ", gutter_line_style)];
             new_spans.append(&mut line.spans);
             lines.push(Line::from(new_spans));
         }
@@ -268,15 +270,17 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
         0
     };
 
-    let (user_border_color, user_text_color) = if ctx.is_current {
-        (Color::Cyan, Color::White)
+    let user_border_color = Color::Cyan;
+    let user_text_color = if ctx.is_current {
+        Color::White
     } else {
-        (Color::DarkGray, Color::Gray)
+        Color::Gray
     };
-    let (asst_border_color, asst_text_color) = if ctx.is_current {
-        (Color::Green, Color::White)
+    let asst_border_color = Color::Magenta;
+    let asst_text_color = if ctx.is_current {
+        Color::White
     } else {
-        (Color::DarkGray, Color::Gray)
+        Color::Gray
     };
 
     // User message bubble (with label).
@@ -285,13 +289,22 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
     let has_user_bubble = !user_text.is_empty();
 
     if has_user_bubble {
-        // User label -- right-aligned above the bubble.
+        // Label -- right-aligned above the bubble.
+        let is_tool_result = matches!(
+            &turn.user_message.content,
+            UserContent::ToolResults(_)
+        );
+        let label_text = if is_tool_result {
+            "Tool Result:"
+        } else {
+            "User:"
+        };
         let mut label_spans = Vec::new();
         if padding_cols > 0 {
             label_spans.push(Span::raw(" ".repeat(padding_cols)));
         }
         label_spans.push(Span::styled(
-            "User:",
+            label_text,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -381,7 +394,7 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
             lines.push(Line::from(Span::styled(
                 "Claude:",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
             )));
 
@@ -467,9 +480,9 @@ fn user_content_text(content: &UserContent, show_tools: bool) -> String {
                 .iter()
                 .map(|r| {
                     if r.is_error {
-                        format!("[Tool Result Error] {}", truncate_end(&r.content, 80))
+                        format!("[Error] {}", truncate_end(&r.content, 80))
                     } else {
-                        format!("[Tool Result] {}", truncate_end(&r.content, 80))
+                        truncate_end(&r.content, 80)
                     }
                 })
                 .collect();
@@ -481,11 +494,11 @@ fn user_content_text(content: &UserContent, show_tools: bool) -> String {
                 for r in tool_results {
                     if r.is_error {
                         parts.push(format!(
-                            "[Tool Result Error] {}",
+                            "[Error] {}",
                             truncate_end(&r.content, 80)
                         ));
                     } else {
-                        parts.push(format!("[Tool Result] {}", truncate_end(&r.content, 80)));
+                        parts.push(truncate_end(&r.content, 80));
                     }
                 }
             }
@@ -674,7 +687,7 @@ mod tests {
             is_error: false,
         }]);
         let text = user_content_text(&content, true);
-        assert!(text.contains("[Tool Result]"));
+        assert!(!text.contains("[Tool Result]"));
         assert!(text.contains("result data"));
     }
 
@@ -686,7 +699,8 @@ mod tests {
             is_error: true,
         }]);
         let text = user_content_text(&content, true);
-        assert!(text.contains("[Tool Result Error]"));
+        assert!(text.contains("[Error]"));
+        assert!(!text.contains("[Tool Result Error]"));
     }
 
     #[test]
@@ -701,7 +715,8 @@ mod tests {
         };
         let text = user_content_text(&content, true);
         assert!(text.contains("some text"));
-        assert!(text.contains("[Tool Result]"));
+        assert!(text.contains("result"));
+        assert!(!text.contains("[Tool Result]"));
     }
 
     #[test]
@@ -861,9 +876,11 @@ mod tests {
 
     #[test]
     fn gutter_shows_turn_number_in_conversation_lines() {
-        let session = make_session(vec![
-            make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]),
-        ]);
+        let session = make_session(vec![make_turn(
+            0,
+            "hello",
+            vec![ContentBlock::Text("hi".to_string())],
+        )]);
         let (lines, _) = build_conversation_lines(&session, 0, &DisplayOptions::default(), 80);
         let first_line = lines[0].to_string();
         assert!(
@@ -903,10 +920,7 @@ mod tests {
         let text = lines_text(&lines);
         assert!(!text.contains("Turn 1/1"), "Should not have header: {text}");
         assert!(text.contains("User:"), "Should have User label: {text}");
-        assert!(
-            text.contains("Claude:"),
-            "Should have Claude label: {text}"
-        );
+        assert!(text.contains("Claude:"), "Should have Claude label: {text}");
     }
 
     #[test]
@@ -1501,10 +1515,7 @@ mod tests {
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         // Tool-only turns should show Claude label and tools when enabled.
-        assert!(
-            text.contains("Claude:"),
-            "Should show Claude label: {text}"
-        );
+        assert!(text.contains("Claude:"), "Should show Claude label: {text}");
         assert!(text.contains("Read"), "Should show tool names: {text}");
     }
 }

@@ -152,11 +152,16 @@ are right-aligned with Cyan borders, Claude bubbles are left-aligned
 with Green borders. The clean default hides tool calls, thinking
 blocks, and token counts — showing only final text output.
 
-**New keybindings:**
+**Keybindings (updated):**
+- `j` / `k` — Next / previous turn (remapped from n/N)
+- `Down` / `Up` — Scroll conversation (remapped from j/k)
+- `u` — Open user message modal (full text, scrollable)
+- `c` — Open claude response modal (full text, scrollable)
 - `o` — Toggle tool call visibility (icons: `◆` success, `✗` error,
   `◇` pending)
 - `T` — Toggle thinking block visibility (icon: `○`)
 - `t` — Toggle token display (unchanged, but default is now OFF)
+- Modal keys: `j`/`k`/arrows scroll, `Esc`/`q` dismiss
 
 **Architecture changes:**
 - `DisplayOptions` struct in `app.rs` replaces standalone `show_tokens`
@@ -169,6 +174,10 @@ blocks, and token counts — showing only final text output.
 - Headers/labels hidden in clean mode, shown when any detail flag is on
 - Chat alignment disabled at terminal width < 50 for graceful degradation
 - `unicode-width` added as direct dependency for column-accurate wrapping
+- `ModalContent` enum + `modal`/`modal_scroll` fields in `AppState`
+- `modal.rs` widget: centered overlay (~80% screen), word-wrapped,
+  scrollable content with colored borders (Cyan=user, Green=claude)
+- Modal key routing in `map_key_to_action` via `modal_active` parameter
 
 ---
 

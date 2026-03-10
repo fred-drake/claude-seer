@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Layout};
 
 use crate::app::{AppState, View};
 use crate::tui::widgets::{
-    conversation, empty_state, help, project_list, session_list, status_bar, title_bar,
+    conversation, empty_state, help, modal, project_list, session_list, status_bar, title_bar,
 };
 
 /// Render the entire UI based on current app state.
@@ -54,6 +54,11 @@ pub fn render(frame: &mut Frame, state: &AppState) {
 
     // Status bar always visible.
     status_bar::render_status_bar(frame, status_area, state);
+
+    // Modal overlay (on top of conversation).
+    if state.modal.is_some() {
+        modal::render_modal(frame, area, state);
+    }
 
     // Help overlay on top of everything.
     if state.show_help {
