@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -43,15 +43,19 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     };
 
+    let title = format!(" session {} ", session.id.0);
+    let block = Block::default().title(title).borders(Borders::ALL);
+    let inner = block.inner(area);
+
     let (lines, current_turn_start) = build_conversation_lines(
         session,
         state.current_turn_index,
         &state.display,
-        area.width,
+        inner.width,
     );
 
     let total_lines = lines.len();
-    let visible_height = area.height as usize;
+    let visible_height = inner.height as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
     // Use current turn's start line as scroll base so n/N navigation
     // (which resets scroll_offset to 0) shows the selected turn at top.
@@ -60,7 +64,8 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let paragraph = Paragraph::new(lines).scroll((clamped_scroll as u16, 0));
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(block, area);
+    frame.render_widget(paragraph, inner);
 }
 
 /// Calculate the bubble width for chat messages.
@@ -299,13 +304,24 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
     let has_user_bubble = !user_text.is_empty();
 
     if has_user_bubble {
-        // Label -- right-aligned above the bubble.
+        // Classify the message to determine label and display text.
         let is_tool_result = matches!(&turn.user_message.content, UserContent::ToolResults(_));
-        let label_text = if is_tool_result {
-            "Tool Result:"
+        let kind = if is_tool_result {
+            None // Tool results keep their own label logic.
         } else {
-            "User:"
+            Some(classify_user_text(&user_text))
         };
+
+        let (label_text, label_color) = if is_tool_result {
+            ("Tool Result:", Color::Cyan)
+        } else {
+            match &kind {
+                Some(UserMessageKind::System(_)) => ("System:", Color::Yellow),
+                Some(UserMessageKind::Command { .. }) => ("User Command:", Color::Magenta),
+                _ => ("User:", Color::Cyan),
+            }
+        };
+
         let mut label_spans = Vec::new();
         if padding_cols > 0 {
             label_spans.push(Span::raw(" ".repeat(padding_cols)));
@@ -313,19 +329,49 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
         label_spans.push(Span::styled(
             label_text,
             Style::default()
-                .fg(Color::Cyan)
+                .fg(label_color)
                 .add_modifier(Modifier::BOLD),
         ));
         lines.push(Line::from(label_spans));
 
-        let wrapped = word_wrap(&user_text, content_width);
-        let bubble_lines: Vec<BubbleLine> = wrapped
-            .into_iter()
-            .map(|text| BubbleLine {
-                text,
-                style: text_style,
-            })
-            .collect();
+        // Build bubble content based on message kind.
+        let bubble_lines: Vec<BubbleLine> = match &kind {
+            Some(UserMessageKind::System(stripped)) => {
+                let wrapped = word_wrap(stripped, content_width);
+                wrapped
+                    .into_iter()
+                    .map(|text| BubbleLine {
+                        text,
+                        style: Style::default().fg(Color::Yellow),
+                    })
+                    .collect()
+            }
+            Some(UserMessageKind::Command { command, args }) => {
+                let display = if args.is_empty() {
+                    command.clone()
+                } else {
+                    format!("{command} {args}")
+                };
+                let wrapped = word_wrap(&display, content_width);
+                wrapped
+                    .into_iter()
+                    .map(|text| BubbleLine {
+                        text,
+                        style: Style::default().fg(Color::Magenta),
+                    })
+                    .collect()
+            }
+            _ => {
+                let wrapped = word_wrap(&user_text, content_width);
+                wrapped
+                    .into_iter()
+                    .map(|text| BubbleLine {
+                        text,
+                        style: text_style,
+                    })
+                    .collect()
+            }
+        };
         lines.extend(make_bubble(
             &bubble_lines,
             user_border_color,
@@ -347,7 +393,11 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
             match block {
                 ContentBlock::Text(text) => {
                     has_text = true;
-                    let wrapped = word_wrap(text, content_width);
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let wrapped = word_wrap(trimmed, content_width);
                     for wline in wrapped {
                         bubble_content.push(BubbleLine {
                             text: wline,
@@ -371,8 +421,10 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                     if ctx.display.show_tools {
                         let icon = tool_icon(&tc.result);
                         let summary = tool_summary(&tc.name, &tc.input);
+                        let full = format!("  {icon} {}  {summary}", tc.name);
+                        let text = truncate_to_width(&full, content_width);
                         bubble_content.push(BubbleLine {
-                            text: format!("  {icon} {}  {summary}", tc.name),
+                            text,
                             style: Style::default().fg(Color::Magenta),
                         });
                     }
@@ -464,6 +516,91 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
     }
 
     lines
+}
+
+/// Truncate a string to fit within `max_cols` display columns, appending "..."
+/// if it exceeds the limit.
+fn truncate_to_width(text: &str, max_cols: usize) -> String {
+    let width = UnicodeWidthStr::width(text);
+    if width <= max_cols {
+        return text.to_string();
+    }
+    // Need room for "..."
+    let target = max_cols.saturating_sub(3);
+    let mut result = String::new();
+    let mut current_width: usize = 0;
+    for ch in text.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if current_width + ch_width > target {
+            break;
+        }
+        result.push(ch);
+        current_width += ch_width;
+    }
+    result.push_str("...");
+    result
+}
+
+/// Classification of a user message based on its raw text content.
+#[derive(Debug, PartialEq)]
+enum UserMessageKind {
+    /// Normal user-typed message with cleaned text.
+    Normal(String),
+    /// System message (from local-command-caveat) with XML stripped.
+    System(String),
+    /// User command (e.g. /clear) with command name and optional args.
+    Command { command: String, args: String },
+}
+
+/// Classify a raw user message text into Normal, System, or Command.
+///
+/// Commands are checked first because they also contain local-command-caveat tags.
+fn classify_user_text(raw: &str) -> UserMessageKind {
+    // Check for commands first -- they also contain local-command-caveat.
+    if let Some(cmd) = extract_tag_content(raw, "command-name") {
+        let args = extract_tag_content(raw, "command-args")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return UserMessageKind::Command {
+            command: cmd.to_string(),
+            args,
+        };
+    }
+
+    // Check for system messages.
+    if raw.contains("<local-command-caveat>") {
+        return UserMessageKind::System(strip_xml_tags(raw));
+    }
+
+    UserMessageKind::Normal(raw.to_string())
+}
+
+/// Strip all XML tags from the given text, returning only the plain content.
+fn strip_xml_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            result.push(ch);
+        }
+    }
+    // Collapse whitespace and trim.
+    let collapsed: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed
+}
+
+/// Extract the text content between the first occurrence of `<tag>` and `</tag>`.
+fn extract_tag_content<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open).map(|i| i + open.len())?;
+    let end = text[start..].find(&close).map(|i| start + i)?;
+    Some(&text[start..end])
 }
 
 /// Extract display text from user content.
@@ -1483,6 +1620,143 @@ mod tests {
             widths.windows(2).all(|w| w[0] == w[1]),
             "All content lines should have the same width, got: {widths:?}"
         );
+    }
+
+    // --- classify_user_text tests ---
+
+    #[test]
+    fn classify_normal_plain_text() {
+        let result = classify_user_text("hello world");
+        assert_eq!(result, UserMessageKind::Normal("hello world".to_string()));
+    }
+
+    #[test]
+    fn classify_system_message_from_local_command_caveat() {
+        let raw = "<local-command-caveat>Some system info about <b>local</b> commands</local-command-caveat>";
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::System(text) => {
+                assert!(!text.contains('<'), "Should strip XML tags: {text}");
+                assert!(text.contains("system info"), "Should keep content: {text}");
+            }
+            other => panic!("Expected System, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_command_message() {
+        let raw = "<command-name>/clear</command-name><command-args></command-args><command-message>clear the conversation</command-message>";
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::Command { command, args } => {
+                assert_eq!(command, "/clear");
+                assert!(args.is_empty());
+            }
+            other => panic!("Expected Command, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_command_with_args() {
+        let raw = "<command-name>/model</command-name><command-args>opus</command-args><command-message>switch model</command-message>";
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::Command { command, args } => {
+                assert_eq!(command, "/model");
+                assert_eq!(args, "opus");
+            }
+            other => panic!("Expected Command, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_turn_lines_system_message_label() {
+        let raw = "<local-command-caveat>You have permission to run local commands</local-command-caveat>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(text.contains("System:"), "Should show System label: {text}");
+        assert!(
+            !text.contains("User:"),
+            "Should NOT show User label: {text}"
+        );
+        // Should show stripped content, not XML tags.
+        assert!(!text.contains('<'), "Should not contain XML tags: {text}");
+        assert!(
+            text.contains("permission"),
+            "Should show stripped content: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_command_message_label() {
+        let raw = "<command-name>/clear</command-name><command-args></command-args><command-message>clearing</command-message>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("cleared".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("User Command:"),
+            "Should show User Command label: {text}"
+        );
+        assert!(text.contains("/clear"), "Should show command name: {text}");
+    }
+
+    #[test]
+    fn build_turn_lines_command_with_args_shows_both() {
+        let raw = "<command-name>/model</command-name><command-args>opus</command-args><command-message>switching</command-message>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("switched".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(text.contains("/model"), "Should show command name: {text}");
+        assert!(text.contains("opus"), "Should show command args: {text}");
+    }
+
+    #[test]
+    fn truncate_to_width_short_text_unchanged() {
+        assert_eq!(truncate_to_width("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_to_width_long_text_gets_ellipsis() {
+        let result = truncate_to_width("a]very long tool path here", 15);
+        assert!(result.ends_with("..."), "Should end with ...: {result}");
+        assert!(
+            UnicodeWidthStr::width(result.as_str()) <= 15,
+            "Should fit in 15 cols: {result}"
+        );
+    }
+
+    #[test]
+    fn truncate_to_width_exact_fit_unchanged() {
+        assert_eq!(truncate_to_width("12345", 5), "12345");
+    }
+
+    #[test]
+    fn tool_use_line_truncated_to_content_width() {
+        let long_path = "/a/".to_string() + &"x".repeat(200);
+        let turn = make_turn(
+            0,
+            "hello",
+            vec![ContentBlock::ToolUse(ToolCall {
+                id: "tc-1".to_string(),
+                name: ToolName::Read,
+                input: serde_json::json!({"file_path": long_path}),
+                result: None,
+            })],
+        );
+        let default_usage = TokenUsage::default();
+        let mut opts = DisplayOptions::default();
+        opts.show_tools = true;
+        let c = ctx(false, opts, &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(text.contains("..."), "Long tool path should be truncated: {text}");
     }
 
     #[test]
