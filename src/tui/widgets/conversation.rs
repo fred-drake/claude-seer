@@ -21,7 +21,6 @@ const TOOL_ICON_PENDING: &str = "◇";
 
 /// Context passed to `build_turn_lines` to avoid a long parameter list.
 struct TurnRenderContext<'a> {
-    total_turns: usize,
     is_current: bool,
     display: DisplayOptions,
     cumulative: &'a TokenUsage,
@@ -130,6 +129,13 @@ fn build_conversation_lines(
     let mut cumulative = TokenUsage::default();
     let mut current_turn_start_line: usize = 0;
 
+    // Gutter: "{number} │ " — width = digits + 3 (space + │ + space).
+    let max_digits = total_turns.max(1).to_string().len();
+    let gutter_width = max_digits + 3; // e.g., " 1 │ " for 1-digit, "10 │ " for 2-digit
+
+    // Reduce available width for turn content to account for the gutter.
+    let content_area_width = area_width.saturating_sub(gutter_width as u16);
+
     for (i, turn) in session.turns.iter().enumerate() {
         // Accumulate token usage from this turn's response.
         if let Some(ref response) = turn.assistant_response {
@@ -141,17 +147,42 @@ fn build_conversation_lines(
         }
 
         let ctx = TurnRenderContext {
-            total_turns,
             is_current: i == current_turn_index,
             display: *display,
             cumulative: &cumulative,
-            width: area_width,
+            width: content_area_width,
         };
         let turn_lines = build_turn_lines(turn, &ctx);
-        lines.extend(turn_lines);
+        let turn_has_content = !turn_lines.is_empty();
 
-        // Blank line between turns.
-        if i + 1 < total_turns {
+        // Prepend gutter to each line: turn number on first line, blank on rest.
+        let turn_number = format!("{:>width$}", turn.index + 1, width = max_digits);
+        let gutter_blank = " ".repeat(max_digits);
+
+        let gutter_color = if ctx.is_current {
+            Color::White
+        } else {
+            Color::DarkGray
+        };
+        let gutter_style = Style::default().fg(gutter_color);
+        let gutter_line_style = Style::default().fg(Color::DarkGray);
+
+        for (j, mut line) in turn_lines.into_iter().enumerate() {
+            let number_part = if j == 0 {
+                Span::styled(turn_number.clone(), gutter_style)
+            } else {
+                Span::styled(gutter_blank.clone(), Style::default())
+            };
+            let mut new_spans = vec![
+                number_part,
+                Span::styled(" \u{2502} ", gutter_line_style),
+            ];
+            new_spans.append(&mut line.spans);
+            lines.push(Line::from(new_spans));
+        }
+
+        // Blank line between turns (only if this turn produced visible output).
+        if turn_has_content && i + 1 < total_turns {
             lines.push(Line::from(""));
         }
     }
@@ -159,13 +190,77 @@ fn build_conversation_lines(
     (lines, current_turn_start_line)
 }
 
-/// Build display lines for a single turn using chat-style layout.
+/// A line of content to be placed inside a bubble.
+struct BubbleLine {
+    text: String,
+    style: Style,
+}
+
+/// Build a chat bubble around content lines using box-drawing characters.
+///
+/// Returns `Vec<Line>` containing: top border, content lines, bottom border.
+/// Each line is optionally left-padded by `padding_cols` spaces.
+fn make_bubble(
+    content_lines: &[BubbleLine],
+    border_color: Color,
+    padding_cols: usize,
+    max_inner_width: usize,
+) -> Vec<Line<'static>> {
+    let border_style = Style::default().fg(border_color);
+
+    // Find the actual widest content line.
+    let actual_width = content_lines
+        .iter()
+        .map(|bl| UnicodeWidthStr::width(bl.text.as_str()))
+        .max()
+        .unwrap_or(0)
+        .min(max_inner_width);
+
+    // Outer width = actual_width + 4 (│ + space + text + space + │).
+    let inner_width = actual_width;
+    let horiz = "─".repeat(inner_width + 2); // +2 for the spaces inside
+
+    let padding = if padding_cols > 0 {
+        " ".repeat(padding_cols)
+    } else {
+        String::new()
+    };
+
+    let mut lines = Vec::with_capacity(content_lines.len() + 2);
+
+    // Top border: ╭───...───╮
+    lines.push(Line::from(vec![
+        Span::raw(padding.clone()),
+        Span::styled(format!("╭{horiz}╮"), border_style),
+    ]));
+
+    // Content lines: │ text... │
+    for bl in content_lines {
+        let text_width = UnicodeWidthStr::width(bl.text.as_str());
+        let pad_right = inner_width.saturating_sub(text_width);
+        lines.push(Line::from(vec![
+            Span::raw(padding.clone()),
+            Span::styled("│ ", border_style),
+            Span::styled(bl.text.clone(), bl.style),
+            Span::styled(format!("{} │", " ".repeat(pad_right)), border_style),
+        ]));
+    }
+
+    // Bottom border: ╰───...───╯
+    lines.push(Line::from(vec![
+        Span::raw(padding),
+        Span::styled(format!("╰{horiz}╯"), border_style),
+    ]));
+
+    lines
+}
+
+/// Build display lines for a single turn using chat-style bubble layout.
 fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let show_detail = ctx.display.any_detail_enabled();
     let bw = bubble_width(ctx.width);
-    // Content width = bubble_width minus 2 for "▌ " prefix.
-    let content_width = bw.saturating_sub(2) as usize;
+    // Content width = bubble_width minus 4 for "│ " prefix and " │" suffix.
+    let content_width = bw.saturating_sub(4) as usize;
     let use_alignment = ctx.width >= 50;
     let padding_cols = if use_alignment {
         ctx.width.saturating_sub(bw) as usize
@@ -184,68 +279,47 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
         (Color::DarkGray, Color::Gray)
     };
 
-    // Turn header (only in detail mode).
-    if show_detail {
-        let header_style = if ctx.is_current {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+    // User message bubble (with label).
+    let user_text = user_content_text(&turn.user_message.content, ctx.display.show_tools);
+    let text_style = Style::default().fg(user_text_color);
+    let has_user_bubble = !user_text.is_empty();
 
-        let mut header_text = format!("--- Turn {}/{}", turn.index + 1, ctx.total_turns);
-        if !turn.is_complete {
-            header_text.push_str(" (incomplete)");
+    if has_user_bubble {
+        // User label -- right-aligned above the bubble.
+        let mut label_spans = Vec::new();
+        if padding_cols > 0 {
+            label_spans.push(Span::raw(" ".repeat(padding_cols)));
         }
-        header_text.push_str(" ---");
-        lines.push(Line::from(Span::styled(header_text, header_style)));
-    }
-
-    // User message.
-    if show_detail {
-        lines.push(Line::from(Span::styled(
+        label_spans.push(Span::styled(
             "User:",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        )));
-    }
+        ));
+        lines.push(Line::from(label_spans));
 
-    let user_text = user_content_text(&turn.user_message.content, ctx.display.show_tools);
-    let border_style = Style::default().fg(user_border_color);
-    let text_style = Style::default().fg(user_text_color);
-
-    if !user_text.is_empty() {
         let wrapped = word_wrap(&user_text, content_width);
-        for wline in wrapped {
-            let mut spans = Vec::new();
-            if padding_cols > 0 {
-                spans.push(Span::raw(" ".repeat(padding_cols)));
-            }
-            spans.push(Span::styled("▌ ", border_style));
-            spans.push(Span::styled(wline, text_style));
-            lines.push(Line::from(spans));
-        }
+        let bubble_lines: Vec<BubbleLine> = wrapped
+            .into_iter()
+            .map(|text| BubbleLine {
+                text,
+                style: text_style,
+            })
+            .collect();
+        lines.extend(make_bubble(
+            &bubble_lines,
+            user_border_color,
+            padding_cols,
+            content_width,
+        ));
     }
 
     // Assistant response.
     if let Some(ref response) = turn.assistant_response {
-        // Blank line separator between user and assistant.
-        lines.push(Line::from(""));
-
-        if show_detail {
-            lines.push(Line::from(Span::styled(
-                "Assistant:",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        }
-
-        let asst_border = Style::default().fg(asst_border_color);
         let asst_text = Style::default().fg(asst_text_color);
 
+        // Collect all assistant content lines into a buffer for the bubble.
+        let mut bubble_content: Vec<BubbleLine> = Vec::new();
         let mut has_text = false;
         let mut tool_count: usize = 0;
 
@@ -255,23 +329,20 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                     has_text = true;
                     let wrapped = word_wrap(text, content_width);
                     for wline in wrapped {
-                        lines.push(Line::from(vec![
-                            Span::styled("▌ ", asst_border),
-                            Span::styled(wline, asst_text),
-                        ]));
+                        bubble_content.push(BubbleLine {
+                            text: wline,
+                            style: asst_text,
+                        });
                     }
                 }
                 ContentBlock::Thinking { text } => {
                     if ctx.display.show_thinking {
-                        let wrapped = word_wrap(text, content_width.saturating_sub(2));
+                        let wrapped = word_wrap(text, content_width.saturating_sub(4));
                         for wline in wrapped {
-                            lines.push(Line::from(vec![
-                                Span::styled("▌ ", asst_border),
-                                Span::styled(
-                                    format!("  ○ {wline}"),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                            ]));
+                            bubble_content.push(BubbleLine {
+                                text: format!("  \u{25CB} {wline}"),
+                                style: Style::default().fg(Color::DarkGray),
+                            });
                         }
                     }
                 }
@@ -289,35 +360,43 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                             None => TOOL_ICON_PENDING,
                         };
                         let summary = tool_summary(&tc.name, &tc.input);
-                        lines.push(Line::from(vec![
-                            Span::styled("▌ ", asst_border),
-                            Span::styled(
-                                format!("  {icon} {}  {summary}", tc.name),
-                                Style::default().fg(Color::Magenta),
-                            ),
-                        ]));
+                        bubble_content.push(BubbleLine {
+                            text: format!("  {icon} {}  {summary}", tc.name),
+                            style: Style::default().fg(Color::Magenta),
+                        });
                     }
                 }
             }
         }
 
-        // Show collapsed summary for tool-only turns when tools are hidden.
-        if !has_text && tool_count > 0 && !ctx.display.show_tools {
-            let label = if tool_count == 1 {
-                "tool call"
-            } else {
-                "tool calls"
-            };
-            lines.push(Line::from(vec![
-                Span::styled("▌ ", asst_border),
-                Span::styled(
-                    format!("[{tool_count} {label} — press o to show]"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
+        // Tool-only turns with tools hidden: skip entirely (no label, no bubble).
+        // When tools are shown or there's text content, render normally.
+        if has_text || tool_count == 0 || ctx.display.show_tools {
+            // Blank line separator between user and assistant (only if user bubble was shown).
+            if has_user_bubble {
+                lines.push(Line::from(""));
+            }
+
+            // Claude label -- above the bubble, left-aligned.
+            lines.push(Line::from(Span::styled(
+                "Claude:",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+
+            // Wrap assistant content in a bubble (left-aligned, no padding).
+            if !bubble_content.is_empty() {
+                lines.extend(make_bubble(
+                    &bubble_content,
+                    asst_border_color,
+                    0, // assistant: no padding (left-aligned)
+                    content_width,
+                ));
+            }
         }
 
-        // Token usage for this turn (when show_tokens is true).
+        // Token usage for this turn (when show_tokens is true) -- OUTSIDE the bubble.
         if ctx.display.show_tokens {
             let usage = &response.usage;
             if usage.total() > 0 {
@@ -337,13 +416,10 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                         format_tokens(usage.cache_creation_tokens)
                     ));
                 }
-                lines.push(Line::from(vec![
-                    Span::styled("▌ ", asst_border),
-                    Span::styled(
-                        format!("  tokens: {}", parts.join(" / ")),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
+                lines.push(Line::from(Span::styled(
+                    format!("  tokens: {}", parts.join(" / ")),
+                    Style::default().fg(Color::DarkGray),
+                )));
 
                 // Cumulative totals.
                 if ctx.cumulative.total() > 0 {
@@ -363,17 +439,14 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                             format_tokens(ctx.cumulative.cache_creation_tokens)
                         ));
                     }
-                    lines.push(Line::from(vec![
-                        Span::styled("▌ ", asst_border),
-                        Span::styled(
-                            format!(
-                                "  \u{03A3} cumulative: {} ({} total)",
-                                cum_parts.join(" / "),
-                                format_tokens(ctx.cumulative.total())
-                            ),
-                            Style::default().fg(Color::Gray),
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  \u{03A3} cumulative: {} ({} total)",
+                            cum_parts.join(" / "),
+                            format_tokens(ctx.cumulative.total())
                         ),
-                    ]));
+                        Style::default().fg(Color::Gray),
+                    )));
                 }
             }
         }
@@ -513,13 +586,11 @@ mod tests {
 
     /// Helper: build a TurnRenderContext with sensible defaults.
     fn ctx(
-        total_turns: usize,
         is_current: bool,
         display: DisplayOptions,
         cumulative: &TokenUsage,
     ) -> TurnRenderContext<'_> {
         TurnRenderContext {
-            total_turns,
             is_current,
             display,
             cumulative,
@@ -789,85 +860,83 @@ mod tests {
     // --- build_turn_lines tests (detail mode — headers/labels visible) ---
 
     #[test]
-    fn build_turn_lines_includes_header() {
-        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi there".to_string())]);
-        let cumulative = TokenUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_creation_tokens: 0,
-            cache_read_tokens: 10,
-        };
-        let c = ctx(3, true, display_tokens(), &cumulative);
-        let lines = build_turn_lines(&turn, &c);
-        let header = lines[0].to_string();
-        assert!(header.contains("Turn 1/3"));
+    fn gutter_shows_turn_number_in_conversation_lines() {
+        let session = make_session(vec![
+            make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]),
+        ]);
+        let (lines, _) = build_conversation_lines(&session, 0, &DisplayOptions::default(), 80);
+        let first_line = lines[0].to_string();
+        assert!(
+            first_line.contains("1 │"),
+            "First line should have turn number in gutter: {first_line}"
+        );
     }
 
     #[test]
-    fn build_turn_lines_includes_user_label() {
+    fn build_turn_lines_always_includes_user_label() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tokens(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let has_user = lines.iter().any(|l| l.to_string().contains("User:"));
         assert!(has_user);
     }
 
     #[test]
-    fn build_turn_lines_includes_assistant_label() {
+    fn build_turn_lines_always_includes_claude_label() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tokens(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
-        let has_asst = lines.iter().any(|l| l.to_string().contains("Assistant:"));
-        assert!(has_asst);
+        let has_claude = lines.iter().any(|l| l.to_string().contains("Claude:"));
+        assert!(has_claude);
     }
 
-    // --- clean view (default) omits headers/labels ---
+    // --- clean view (default) omits turn headers but keeps labels ---
 
     #[test]
-    fn clean_view_omits_headers_and_labels() {
+    fn clean_view_omits_headers_but_keeps_labels() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(!text.contains("Turn 1/1"), "Should not have header: {text}");
+        assert!(text.contains("User:"), "Should have User label: {text}");
         assert!(
-            !text.contains("User:"),
-            "Should not have User label: {text}"
-        );
-        assert!(
-            !text.contains("Assistant:"),
-            "Should not have Assistant label: {text}"
+            text.contains("Claude:"),
+            "Should have Claude label: {text}"
         );
     }
 
     #[test]
-    fn detail_view_shows_headers_and_labels() {
+    fn detail_view_shows_labels() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_all(), &default_usage);
+        let c = ctx(false, display_all(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
-        assert!(text.contains("Turn 1/1"));
         assert!(text.contains("User:"));
-        assert!(text.contains("Assistant:"));
+        assert!(text.contains("Claude:"));
     }
 
     #[test]
-    fn each_flag_independently_triggers_headers() {
+    fn each_detail_flag_independently_shows_its_content() {
+        // show_tokens should show token info
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        for opts in [display_tokens(), display_tools(), display_thinking()] {
-            let default_usage = TokenUsage::default();
-            let c = ctx(1, false, opts, &default_usage);
-            let lines = build_turn_lines(&turn, &c);
-            let text = lines_text(&lines);
-            assert!(
-                text.contains("Turn 1/1"),
-                "Should have header with {opts:?}"
-            );
-        }
+        let cumulative = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 10,
+        };
+        let c = ctx(false, display_tokens(), &cumulative);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("tokens:"),
+            "show_tokens should display token info: {text}"
+        );
     }
 
     // --- tool/thinking filtering ---
@@ -888,7 +957,7 @@ mod tests {
             ],
         );
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(!text.contains("Read"), "Should hide tool: {text}");
@@ -907,7 +976,7 @@ mod tests {
             })],
         );
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tools(), &default_usage);
+        let c = ctx(false, display_tools(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains("Read"), "Should show tool: {text}");
@@ -924,7 +993,7 @@ mod tests {
             }],
         );
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -943,7 +1012,7 @@ mod tests {
             }],
         );
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_thinking(), &default_usage);
+        let c = ctx(false, display_thinking(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -954,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn build_turn_lines_tool_only_turn_shows_collapsed_summary() {
+    fn tool_only_turn_hidden_when_tools_disabled() {
         let turn = make_turn(
             0,
             "hello",
@@ -974,16 +1043,17 @@ mod tests {
             ],
         );
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
+        // Tool-only turns should be completely hidden when tools are disabled.
         assert!(
-            text.contains("2 tool calls"),
-            "Should show collapsed tool count: {text}"
+            !text.contains("Claude:"),
+            "Should not show Claude label: {text}"
         );
         assert!(
-            text.contains("press o to show"),
-            "Should hint at toggle: {text}"
+            !text.contains("tool calls"),
+            "Should not show collapsed summary: {text}"
         );
     }
 
@@ -993,7 +1063,7 @@ mod tests {
     fn user_lines_have_leading_padding_at_width_80() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, true, DisplayOptions::default(), &default_usage);
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         // The user message line should have padding (right-aligned).
         let user_line = lines
@@ -1013,9 +1083,9 @@ mod tests {
     fn assistant_lines_have_no_leading_padding() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, true, DisplayOptions::default(), &default_usage);
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
-        // Find assistant line with "hi" (not the user "hello" line).
+        // Find assistant content line with "hi" (not the user "hello" line).
         let asst_line = lines
             .iter()
             .find(|l| {
@@ -1023,8 +1093,10 @@ mod tests {
                 s.contains("hi") && !s.contains("hello")
             })
             .unwrap();
-        // First span should be the border "▌ ", not padding.
-        assert_eq!(asst_line.spans[0].content.as_ref(), "▌ ");
+        // First span should be empty padding (no padding for assistant).
+        assert_eq!(asst_line.spans[0].content.as_ref(), "");
+        // Second span should be the box-drawing border "│ ".
+        assert_eq!(asst_line.spans[1].content.as_ref(), "│ ");
     }
 
     #[test]
@@ -1032,22 +1104,27 @@ mod tests {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let cumulative = TokenUsage::default();
         let c = TurnRenderContext {
-            total_turns: 1,
             is_current: true,
             display: DisplayOptions::default(),
             cumulative: &cumulative,
             width: 40, // < 50
         };
         let lines = build_turn_lines(&turn, &c);
-        // User line should NOT have leading padding.
+        // User bubble lines should NOT have leading padding (narrow terminal).
         let user_line = lines
             .iter()
             .find(|l| l.to_string().contains("hello"))
             .unwrap();
+        // First span should be empty (no padding), second is "│ " border.
         assert_eq!(
             user_line.spans[0].content.as_ref(),
-            "▌ ",
-            "Narrow: user line should start with border, not padding"
+            "",
+            "Narrow: user line should have empty padding"
+        );
+        assert_eq!(
+            user_line.spans[1].content.as_ref(),
+            "│ ",
+            "Narrow: user line should have │ border"
         );
     }
 
@@ -1062,7 +1139,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 10,
         };
-        let c = ctx(1, false, display_tokens(), &cumulative);
+        let c = ctx(false, display_tokens(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -1078,7 +1155,7 @@ mod tests {
             resp.usage = TokenUsage::default();
         }
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tokens(), &default_usage);
+        let c = ctx(false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -1100,7 +1177,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 50,
         };
-        let c = ctx(1, false, DisplayOptions::default(), &cumulative);
+        let c = ctx(false, DisplayOptions::default(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(!text.contains("tokens:"), "Should hide tokens: {text}");
@@ -1119,7 +1196,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 50,
         };
-        let c = ctx(1, false, display_tokens(), &cumulative);
+        let c = ctx(false, display_tokens(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -1135,22 +1212,22 @@ mod tests {
             resp.usage.cache_creation_tokens = 200;
         }
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tokens(), &default_usage);
+        let c = ctx(false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains("cache write"), "Expected cache write: {text}");
     }
 
     #[test]
-    fn build_turn_lines_incomplete_turn_shows_indicator() {
+    fn build_turn_lines_incomplete_turn_still_renders() {
         let mut turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         turn.is_complete = false;
-        // Need detail mode to see header.
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tokens(), &default_usage);
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
-        assert!(text.contains("(incomplete)"), "Expected incomplete: {text}");
+        // Incomplete turns still render user and assistant content.
+        assert!(text.contains("hello"), "Should show user message: {text}");
     }
 
     #[test]
@@ -1164,10 +1241,10 @@ mod tests {
             events: Vec::new(),
         };
         let default_usage = TokenUsage::default();
-        let c = ctx(1, false, display_tokens(), &default_usage);
+        let c = ctx(false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
-        let has_asst = lines.iter().any(|l| l.to_string().contains("Assistant:"));
-        assert!(!has_asst);
+        let has_claude = lines.iter().any(|l| l.to_string().contains("Claude:"));
+        assert!(!has_claude);
     }
 
     // --- build_conversation_lines tests ---
@@ -1242,21 +1319,192 @@ mod tests {
 
         let (lines, _) = build_conversation_lines(&session, 0, &display_tokens(), 80);
         let text = lines_text(&lines);
-        assert!(text.contains("Turn 1/2"));
-        assert!(text.contains("Turn 2/2"));
+        // Turn numbers appear in the gutter.
+        assert!(text.contains("1 │"), "Should have turn 1 gutter: {text}");
+        assert!(text.contains("2 │"), "Should have turn 2 gutter: {text}");
         assert!(text.contains("first"));
         assert!(text.contains("second"));
     }
 
-    // --- ▌ border tests ---
+    // --- chat bubble border tests ---
 
     #[test]
-    fn lines_contain_left_border() {
+    fn user_bubble_has_top_and_bottom_borders() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
-        let c = ctx(1, true, DisplayOptions::default(), &default_usage);
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
-        assert!(text.contains('▌'), "Expected ▌ border: {text}");
+        // User bubble should have rounded box-drawing borders.
+        assert!(text.contains('╭'), "Expected top-left corner: {text}");
+        assert!(text.contains('╮'), "Expected top-right corner: {text}");
+        assert!(text.contains('╰'), "Expected bottom-left corner: {text}");
+        assert!(text.contains('╯'), "Expected bottom-right corner: {text}");
+        assert!(text.contains('─'), "Expected horizontal border: {text}");
+    }
+
+    #[test]
+    fn assistant_bubble_has_top_and_bottom_borders() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        // Find lines belonging to assistant (after blank separator).
+        let text = lines_text(&lines);
+        // Both user and assistant should have bubbles with borders.
+        let top_count = text.matches('╭').count();
+        let bottom_count = text.matches('╰').count();
+        assert!(
+            top_count >= 2,
+            "Expected at least 2 top borders (user + assistant), got {top_count}: {text}"
+        );
+        assert!(
+            bottom_count >= 2,
+            "Expected at least 2 bottom borders (user + assistant), got {bottom_count}: {text}"
+        );
+    }
+
+    #[test]
+    fn bubble_content_lines_use_vertical_bar_borders() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        // Content lines should use │ (box-drawing vertical) not ▌ (left half block).
+        assert!(
+            text.contains('│'),
+            "Expected │ box-drawing vertical: {text}"
+        );
+        assert!(
+            !text.contains('▌'),
+            "Should NOT contain ▌ left half block: {text}"
+        );
+    }
+
+    #[test]
+    fn token_lines_appear_outside_bubble() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let cumulative = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 10,
+        };
+        let c = ctx(false, display_tokens(), &cumulative);
+        let lines = build_turn_lines(&turn, &c);
+        // Find the token line.
+        let token_line = lines
+            .iter()
+            .find(|l| l.to_string().contains("tokens:"))
+            .expect("Should have token line");
+        let token_text = token_line.to_string();
+        // Token line should NOT be inside a bubble (no │ border).
+        assert!(
+            !token_text.contains('│'),
+            "Token line should be outside bubble (no │): {token_text}"
+        );
+    }
+
+    #[test]
+    fn labels_appear_outside_bubble() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        // User label should not contain bubble border characters (╭╰│).
+        let user_label = lines
+            .iter()
+            .find(|l| l.to_string().contains("User:"))
+            .expect("Should have User label");
+        let user_label_text = user_label.to_string();
+        assert!(
+            !user_label_text.contains('╭') && !user_label_text.contains('╰'),
+            "User label should be outside bubble: {user_label_text}"
+        );
+    }
+
+    #[test]
+    fn user_bubble_right_aligned_all_parts() {
+        let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        // Find the user bubble top border (╭).
+        let top_border = lines
+            .iter()
+            .find(|l| l.to_string().contains('╭'))
+            .expect("Should have top border");
+        // First span should be the padding (20 chars at width=80, bubble=60).
+        assert_eq!(
+            top_border.spans[0].content.len(),
+            20,
+            "Top border should have 20-char padding"
+        );
+    }
+
+    #[test]
+    fn bubble_content_is_padded_to_uniform_width() {
+        let turn = make_turn(
+            0,
+            "short\nthis is a longer line",
+            vec![ContentBlock::Text("hi".to_string())],
+        );
+        let default_usage = TokenUsage::default();
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        // Find all user content lines (between ╭ and ╰).
+        let user_content_lines: Vec<&Line> = lines
+            .iter()
+            .filter(|l| {
+                let s = l.to_string();
+                s.contains("│") && (s.contains("short") || s.contains("longer"))
+            })
+            .collect();
+        assert!(
+            user_content_lines.len() >= 2,
+            "Should have at least 2 user content lines"
+        );
+        // All content lines should have the same total display width.
+        let widths: Vec<usize> = user_content_lines
+            .iter()
+            .map(|l| l.to_string().len())
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "All content lines should have the same width, got: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn tool_only_turn_shown_when_tools_enabled() {
+        let turn = make_turn(
+            0,
+            "hello",
+            vec![
+                ContentBlock::ToolUse(ToolCall {
+                    id: "tc-1".to_string(),
+                    name: ToolName::Read,
+                    input: serde_json::json!({"file_path": "a.rs"}),
+                    result: None,
+                }),
+                ContentBlock::ToolUse(ToolCall {
+                    id: "tc-2".to_string(),
+                    name: ToolName::Edit,
+                    input: serde_json::json!({"file_path": "b.rs"}),
+                    result: None,
+                }),
+            ],
+        );
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, display_tools(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        // Tool-only turns should show Claude label and tools when enabled.
+        assert!(
+            text.contains("Claude:"),
+            "Should show Claude label: {text}"
+        );
+        assert!(text.contains("Read"), "Should show tool names: {text}");
     }
 }

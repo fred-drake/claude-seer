@@ -146,9 +146,10 @@ out or quit. Use `--path /custom/path` for non-standard installs.
 ### v0.1.1 - Chat-Style Conversation Redesign (IMPLEMENTED)
 
 **What changed:** The conversation view was redesigned from a flat,
-label-heavy layout to a modern chat-style display. User messages are
-right-aligned with Cyan `▌` borders, Claude messages are left-aligned
-with Green `▌` borders. The clean default hides tool calls, thinking
+label-heavy layout to a modern chat-style display with enclosed chat
+bubbles using rounded box-drawing characters (`╭╮╰╯│─`). User bubbles
+are right-aligned with Cyan borders, Claude bubbles are left-aligned
+with Green borders. The clean default hides tool calls, thinking
 blocks, and token counts — showing only final text output.
 
 **New keybindings:**
@@ -160,7 +161,11 @@ blocks, and token counts — showing only final text output.
 **Architecture changes:**
 - `DisplayOptions` struct in `app.rs` replaces standalone `show_tokens`
 - `TurnRenderContext` struct in `conversation.rs` replaces parameter list
+- `BubbleLine` struct + `make_bubble()` helper for enclosed chat bubbles
 - `bubble_width()` + `word_wrap()` for responsive text layout
+- Content width = `bubble_width - 4` (for `│ ` and ` │` on each side)
+- Bubble width auto-sizes to longest content line (capped at max)
+- Token and cumulative lines render outside the bubble
 - Headers/labels hidden in clean mode, shown when any detail flag is on
 - Chat alignment disabled at terminal width < 50 for graceful degradation
 - `unicode-width` added as direct dependency for column-accurate wrapping
