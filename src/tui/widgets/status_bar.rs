@@ -9,6 +9,8 @@ use ratatui::widgets::Paragraph;
 use crate::app::{AppState, View};
 use crate::data::model::format_tokens;
 
+use super::text_utils::plural;
+
 /// Build the status bar text from application state (unlimited width, for tests).
 #[cfg(test)]
 fn build_status_text(state: &AppState) -> String {
@@ -32,11 +34,7 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
     match &state.view {
         View::ProjectList => {
             let project_count = state.projects.len();
-            let project_label = if project_count == 1 {
-                "project"
-            } else {
-                "projects"
-            };
+            let project_label = plural(project_count, "project", "projects");
             let core = format!(" {} {project_label}", project_count);
             let hints: &[&str] = &[" | Esc: quit", " | ? help"];
 
@@ -53,11 +51,7 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
         }
         View::SessionList => {
             let session_count = state.sessions.len();
-            let session_label = if session_count == 1 {
-                "session"
-            } else {
-                "sessions"
-            };
+            let session_label = plural(session_count, "session", "sessions");
             let core = if let Some(ref err) = state.last_error {
                 format!(" {} {session_label} | Error: {}", session_count, err)
             } else {
@@ -95,11 +89,7 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
                 };
                 let warning_count = session.parse_warnings.len();
                 let warning_text = if warning_count > 0 {
-                    let label = if warning_count == 1 {
-                        "warning"
-                    } else {
-                        "warnings"
-                    };
+                    let label = plural(warning_count, "warning", "warnings");
                     Some(format!(" | {warning_count} {label}"))
                 } else {
                     None

@@ -5,4 +5,5 @@ pub mod layout;
 pub mod project_list;
 pub mod session_list;
 pub mod status_bar;
+pub mod text_utils;
 pub mod title_bar;

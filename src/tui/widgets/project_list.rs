@@ -9,6 +9,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use crate::app::AppState;
 use crate::data::model::{ProjectSummary, format_relative_time};
 
+use super::text_utils::plural;
+
 /// Render the project list into the given area.
 pub fn render_project_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let items: Vec<ListItem> = state
@@ -73,11 +75,7 @@ fn format_project_lines(project: &ProjectSummary, is_cwd: bool) -> Vec<Line<'sta
     )));
 
     // Line 3: Session count + relative time.
-    let session_label = if project.session_count == 1 {
-        "session"
-    } else {
-        "sessions"
-    };
+    let session_label = plural(project.session_count, "session", "sessions");
     let time_part = project
         .last_activity
         .map(|dt| format!(" \u{00B7} {}", format_relative_time(dt)))

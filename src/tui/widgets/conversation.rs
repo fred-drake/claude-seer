@@ -13,12 +13,18 @@ use crate::data::model::{
     ContentBlock, Session, TokenUsage, ToolName, Turn, UserContent, format_tokens,
 };
 
+use super::text_utils::truncate_end;
+
+const TOOL_ICON_SUCCESS: &str = "◆";
+const TOOL_ICON_ERROR: &str = "✗";
+const TOOL_ICON_PENDING: &str = "◇";
+
 /// Context passed to `build_turn_lines` to avoid a long parameter list.
-struct TurnRenderContext {
+struct TurnRenderContext<'a> {
     total_turns: usize,
     is_current: bool,
     display: DisplayOptions,
-    cumulative: TokenUsage,
+    cumulative: &'a TokenUsage,
     width: u16,
 }
 
@@ -77,16 +83,7 @@ fn word_wrap(text: &str, max_cols: usize) -> Vec<String> {
             if current.is_empty() {
                 // First word — if it's wider than max, char-split it.
                 if word_width > max_cols {
-                    for ch in word.chars() {
-                        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                        if current_width + ch_w > max_cols && !current.is_empty() {
-                            lines.push(current);
-                            current = String::new();
-                            current_width = 0;
-                        }
-                        current.push(ch);
-                        current_width += ch_w;
-                    }
+                    char_split_push(word, max_cols, &mut current, &mut current_width, &mut lines);
                 } else {
                     current = word.to_string();
                     current_width = word_width;
@@ -101,16 +98,7 @@ fn word_wrap(text: &str, max_cols: usize) -> Vec<String> {
                 if word_width > max_cols {
                     current = String::new();
                     current_width = 0;
-                    for ch in word.chars() {
-                        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                        if current_width + ch_w > max_cols && !current.is_empty() {
-                            lines.push(current);
-                            current = String::new();
-                            current_width = 0;
-                        }
-                        current.push(ch);
-                        current_width += ch_w;
-                    }
+                    char_split_push(word, max_cols, &mut current, &mut current_width, &mut lines);
                 } else {
                     current = word.to_string();
                     current_width = word_width;
@@ -156,7 +144,7 @@ fn build_conversation_lines(
             total_turns,
             is_current: i == current_turn_index,
             display: *display,
-            cumulative: cumulative.clone(),
+            cumulative: &cumulative,
             width: area_width,
         };
         let turn_lines = build_turn_lines(turn, &ctx);
@@ -293,12 +281,12 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                         let icon = match &tc.result {
                             Some(result) => {
                                 if result.is_error {
-                                    "✗"
+                                    TOOL_ICON_ERROR
                                 } else {
-                                    "◆"
+                                    TOOL_ICON_SUCCESS
                                 }
                             }
-                            None => "◇",
+                            None => TOOL_ICON_PENDING,
                         };
                         let summary = tool_summary(&tc.name, &tc.input);
                         lines.push(Line::from(vec![
@@ -406,9 +394,9 @@ fn user_content_text(content: &UserContent, show_tools: bool) -> String {
                 .iter()
                 .map(|r| {
                     if r.is_error {
-                        format!("[Tool Result Error] {}", truncate(&r.content, 80))
+                        format!("[Tool Result Error] {}", truncate_end(&r.content, 80))
                     } else {
-                        format!("[Tool Result] {}", truncate(&r.content, 80))
+                        format!("[Tool Result] {}", truncate_end(&r.content, 80))
                     }
                 })
                 .collect();
@@ -419,9 +407,12 @@ fn user_content_text(content: &UserContent, show_tools: bool) -> String {
             if show_tools {
                 for r in tool_results {
                     if r.is_error {
-                        parts.push(format!("[Tool Result Error] {}", truncate(&r.content, 80)));
+                        parts.push(format!(
+                            "[Tool Result Error] {}",
+                            truncate_end(&r.content, 80)
+                        ));
                     } else {
-                        parts.push(format!("[Tool Result] {}", truncate(&r.content, 80)));
+                        parts.push(format!("[Tool Result] {}", truncate_end(&r.content, 80)));
                     }
                 }
             }
@@ -440,7 +431,7 @@ fn tool_summary(name: &ToolName, input: &serde_json::Value) -> String {
             .to_string(),
         ToolName::Bash => {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            truncate(cmd, 60)
+            truncate_end(cmd, 60)
         }
         ToolName::Glob => input
             .get("pattern")
@@ -454,22 +445,27 @@ fn tool_summary(name: &ToolName, input: &serde_json::Value) -> String {
             .to_string(),
         _ => {
             let s = input.to_string();
-            truncate(&s, 60)
+            truncate_end(&s, 60)
         }
     }
 }
 
-/// Truncate a string to max_len characters, appending "..." if truncated.
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        let end = s
-            .char_indices()
-            .nth(max_len.saturating_sub(3))
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..end])
+/// Split a word character-by-character into lines when it exceeds `max_cols`.
+fn char_split_push(
+    word: &str,
+    max_cols: usize,
+    current: &mut String,
+    current_width: &mut usize,
+    lines: &mut Vec<String>,
+) {
+    for ch in word.chars() {
+        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if *current_width + ch_w > max_cols && !current.is_empty() {
+            lines.push(std::mem::take(current));
+            *current_width = 0;
+        }
+        current.push(ch);
+        *current_width += ch_w;
     }
 }
 
@@ -516,16 +512,12 @@ mod tests {
     }
 
     /// Helper: build a TurnRenderContext with sensible defaults.
-    fn ctx(total_turns: usize, is_current: bool, display: DisplayOptions) -> TurnRenderContext {
-        ctx_with_cumulative(total_turns, is_current, display, TokenUsage::default())
-    }
-
-    fn ctx_with_cumulative(
+    fn ctx(
         total_turns: usize,
         is_current: bool,
         display: DisplayOptions,
-        cumulative: TokenUsage,
-    ) -> TurnRenderContext {
+        cumulative: &TokenUsage,
+    ) -> TurnRenderContext<'_> {
         TurnRenderContext {
             total_turns,
             is_current,
@@ -729,20 +721,20 @@ mod tests {
 
     #[test]
     fn truncate_short_string_unchanged() {
-        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate_end("hello", 10), "hello");
     }
 
     #[test]
     fn truncate_long_string_adds_ellipsis() {
         let long = "a".repeat(100);
-        let result = truncate(&long, 20);
+        let result = truncate_end(&long, 20);
         assert!(result.ends_with("..."));
         assert_eq!(result.len(), 20);
     }
 
     #[test]
     fn truncate_unicode_multibyte() {
-        let result = truncate("héllo wörld café", 10);
+        let result = truncate_end("héllo wörld café", 10);
         assert!(result.ends_with("..."));
         assert_eq!(result.chars().count(), 10);
     }
@@ -805,7 +797,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 10,
         };
-        let c = ctx_with_cumulative(3, true, display_tokens(), cumulative);
+        let c = ctx(3, true, display_tokens(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let header = lines[0].to_string();
         assert!(header.contains("Turn 1/3"));
@@ -814,7 +806,8 @@ mod tests {
     #[test]
     fn build_turn_lines_includes_user_label() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, false, display_tokens());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let has_user = lines.iter().any(|l| l.to_string().contains("User:"));
         assert!(has_user);
@@ -823,7 +816,8 @@ mod tests {
     #[test]
     fn build_turn_lines_includes_assistant_label() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, false, display_tokens());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let has_asst = lines.iter().any(|l| l.to_string().contains("Assistant:"));
         assert!(has_asst);
@@ -834,7 +828,8 @@ mod tests {
     #[test]
     fn clean_view_omits_headers_and_labels() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, false, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(!text.contains("Turn 1/1"), "Should not have header: {text}");
@@ -851,7 +846,8 @@ mod tests {
     #[test]
     fn detail_view_shows_headers_and_labels() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, false, display_all());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_all(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains("Turn 1/1"));
@@ -863,7 +859,8 @@ mod tests {
     fn each_flag_independently_triggers_headers() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         for opts in [display_tokens(), display_tools(), display_thinking()] {
-            let c = ctx(1, false, opts);
+            let default_usage = TokenUsage::default();
+            let c = ctx(1, false, opts, &default_usage);
             let lines = build_turn_lines(&turn, &c);
             let text = lines_text(&lines);
             assert!(
@@ -890,7 +887,8 @@ mod tests {
                 }),
             ],
         );
-        let c = ctx(1, false, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(!text.contains("Read"), "Should hide tool: {text}");
@@ -908,7 +906,8 @@ mod tests {
                 result: None,
             })],
         );
-        let c = ctx(1, false, display_tools());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tools(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains("Read"), "Should show tool: {text}");
@@ -924,7 +923,8 @@ mod tests {
                 text: "deep thoughts".to_string(),
             }],
         );
-        let c = ctx(1, false, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -942,7 +942,8 @@ mod tests {
                 text: "deep thoughts".to_string(),
             }],
         );
-        let c = ctx(1, false, display_thinking());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_thinking(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -972,7 +973,8 @@ mod tests {
                 }),
             ],
         );
-        let c = ctx(1, false, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -990,7 +992,8 @@ mod tests {
     #[test]
     fn user_lines_have_leading_padding_at_width_80() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, true, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         // The user message line should have padding (right-aligned).
         let user_line = lines
@@ -1009,7 +1012,8 @@ mod tests {
     #[test]
     fn assistant_lines_have_no_leading_padding() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, true, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         // Find assistant line with "hi" (not the user "hello" line).
         let asst_line = lines
@@ -1026,11 +1030,12 @@ mod tests {
     #[test]
     fn narrow_terminal_disables_alignment() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
+        let cumulative = TokenUsage::default();
         let c = TurnRenderContext {
             total_turns: 1,
             is_current: true,
             display: DisplayOptions::default(),
-            cumulative: TokenUsage::default(),
+            cumulative: &cumulative,
             width: 40, // < 50
         };
         let lines = build_turn_lines(&turn, &c);
@@ -1057,7 +1062,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 10,
         };
-        let c = ctx_with_cumulative(1, false, display_tokens(), cumulative);
+        let c = ctx(1, false, display_tokens(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -1072,7 +1077,8 @@ mod tests {
         if let Some(ref mut resp) = turn.assistant_response {
             resp.usage = TokenUsage::default();
         }
-        let c = ctx(1, false, display_tokens());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -1094,7 +1100,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 50,
         };
-        let c = ctx_with_cumulative(1, false, DisplayOptions::default(), cumulative);
+        let c = ctx(1, false, DisplayOptions::default(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(!text.contains("tokens:"), "Should hide tokens: {text}");
@@ -1113,7 +1119,7 @@ mod tests {
             cache_creation_tokens: 0,
             cache_read_tokens: 50,
         };
-        let c = ctx_with_cumulative(1, false, display_tokens(), cumulative);
+        let c = ctx(1, false, display_tokens(), &cumulative);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
@@ -1128,7 +1134,8 @@ mod tests {
         if let Some(ref mut resp) = turn.assistant_response {
             resp.usage.cache_creation_tokens = 200;
         }
-        let c = ctx(1, false, display_tokens());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains("cache write"), "Expected cache write: {text}");
@@ -1139,7 +1146,8 @@ mod tests {
         let mut turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         turn.is_complete = false;
         // Need detail mode to see header.
-        let c = ctx(1, false, display_tokens());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains("(incomplete)"), "Expected incomplete: {text}");
@@ -1155,7 +1163,8 @@ mod tests {
             is_complete: false,
             events: Vec::new(),
         };
-        let c = ctx(1, false, display_tokens());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, false, display_tokens(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let has_asst = lines.iter().any(|l| l.to_string().contains("Assistant:"));
         assert!(!has_asst);
@@ -1244,7 +1253,8 @@ mod tests {
     #[test]
     fn lines_contain_left_border() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
-        let c = ctx(1, true, DisplayOptions::default());
+        let default_usage = TokenUsage::default();
+        let c = ctx(1, true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(text.contains('▌'), "Expected ▌ border: {text}");
