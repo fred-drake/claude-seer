@@ -2,6 +2,7 @@ pub mod conversation;
 pub mod empty_state;
 pub mod help;
 pub mod layout;
+pub mod md_wrap;
 pub mod modal;
 pub mod project_list;
 pub mod session_list;

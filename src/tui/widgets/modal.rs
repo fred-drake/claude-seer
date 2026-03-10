@@ -9,15 +9,14 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::app::{AppState, ModalContent};
 use crate::data::model::{ContentBlock, Turn, UserContent};
 
-use super::conversation::{THINKING_ICON, tool_icon, tool_summary};
+use super::conversation::{THINKING_ICON, tool_icon};
 use super::layout::centered_rect;
-use super::text_utils::truncate_end;
 
 /// Extract the full text content for a modal based on modal type and current turn.
 fn extract_modal_text(turn: &Turn, modal: &ModalContent) -> String {
     match modal {
         ModalContent::User => match &turn.user_message.content {
-            UserContent::Text(text) => text.clone(),
+            UserContent::Text(text) => text.trim().to_string(),
             UserContent::ToolResults(results) => results
                 .iter()
                 .map(|r| {
@@ -48,19 +47,26 @@ fn extract_modal_text(turn: &Turn, modal: &ModalContent) -> String {
             let mut parts: Vec<String> = Vec::new();
             for block in &response.content_blocks {
                 match block {
-                    ContentBlock::Text(text) => parts.push(text.clone()),
+                    ContentBlock::Text(text) => {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            parts.push(trimmed.to_string());
+                        }
+                    }
                     ContentBlock::Thinking { text } => {
-                        parts.push(format!("{THINKING_ICON} {text}"));
+                        if !text.trim().is_empty() {
+                            parts.push(format!("{THINKING_ICON} {text}"));
+                        }
                     }
                     ContentBlock::ToolUse(tc) => {
                         let icon = tool_icon(&tc.result);
-                        let summary = tool_summary(&tc.name, &tc.input);
-                        let mut tool_text = format!("{icon} {}  {summary}", tc.name);
+                        let input_str = serde_json::to_string_pretty(&tc.input)
+                            .unwrap_or_else(|_| tc.input.to_string());
+                        let mut tool_text = format!("{icon} {}:\n{input_str}", tc.name);
                         if let Some(ref result) = tc.result
                             && !result.content.is_empty()
                         {
-                            tool_text
-                                .push_str(&format!("\n{}", truncate_end(&result.content, 500)));
+                            tool_text.push_str(&format!("\n\n{}", result.content));
                         }
                         parts.push(tool_text);
                     }
@@ -311,8 +317,12 @@ mod tests {
         };
         let text = extract_modal_text(&turn, &ModalContent::Claude);
         assert!(
-            text.contains("◆ Read  /tmp/test.rs"),
-            "Expected rich tool summary, got: {text}"
+            text.contains("◆ Read"),
+            "Expected tool icon and name, got: {text}"
+        );
+        assert!(
+            text.contains("/tmp/test.rs"),
+            "Expected full file path in input, got: {text}"
         );
         assert!(
             text.contains("file contents"),
@@ -352,8 +362,12 @@ mod tests {
         };
         let text = extract_modal_text(&turn, &ModalContent::Claude);
         assert!(
-            text.contains("✗ Bash  ls /nonexistent"),
-            "Expected error tool icon, got: {text}"
+            text.contains("✗ Bash"),
+            "Expected error tool icon and name, got: {text}"
+        );
+        assert!(
+            text.contains("ls /nonexistent"),
+            "Expected full command in input, got: {text}"
         );
         assert!(
             text.contains("No such file or directory"),
@@ -389,8 +403,12 @@ mod tests {
         };
         let text = extract_modal_text(&turn, &ModalContent::Claude);
         assert!(
-            text.contains("◇ Read  /tmp/file.txt"),
-            "Expected pending tool icon, got: {text}"
+            text.contains("◇ Read"),
+            "Expected pending tool icon and name, got: {text}"
+        );
+        assert!(
+            text.contains("/tmp/file.txt"),
+            "Expected full file path in input, got: {text}"
         );
     }
 

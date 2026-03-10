@@ -1,6 +1,6 @@
 # Claude Seer - Product Roadmap
 
-Last Updated: 2026-03-09 | Version: 0.1.1 (chat-style conversation redesign)
+Last Updated: 2026-03-10 | Version: 0.1.1 (chat-style conversation redesign)
 
 ## Vision
 
@@ -173,7 +173,22 @@ blocks, and token counts — showing only final text output.
 - Token and cumulative lines render outside the bubble
 - Headers/labels hidden in clean mode, shown when any detail flag is on
 - Chat alignment disabled at terminal width < 50 for graceful degradation
+- `pulldown-cmark` added for markdown rendering in assistant text blocks
+- `md_wrap` module: converts markdown to styled, word-wrapped `BubbleLine`s
+  (bold, italic, inline code, code blocks, headers, ordered/unordered lists)
+- `BubbleLine` struct moved from conversation.rs to md_wrap.rs with rich spans
 - `unicode-width` added as direct dependency for column-accurate wrapping
+- **Markdown UX polish** (2026-03-10):
+  - Truncation indicator: `hard_truncate` appends ellipsis when clipping
+  - Inline code: White on DarkGray background (was Yellow foreground)
+  - Code blocks: left-border prefix `▎ ` + White on DarkGray background
+  - Non-current turn dimming: code uses Gray on Black for non-current turns
+  - Blank line separation before/after code blocks
+  - Continuation indent for wrapped list items (aligns with text start)
+  - `is_current_turn` parameter added to `markdown_wrap()` for style selection
+- **Performance note**: Markdown is re-parsed every render frame; consider
+  caching `Vec<BubbleLine>` per content block, invalidating on terminal
+  resize. Not urgent for typical sessions but needed for 100+ turn sessions.
 - `ModalContent` enum + `modal`/`modal_scroll` fields in `AppState`
 - `modal.rs` widget: centered overlay (~80% screen), word-wrapped,
   scrollable content with colored borders (Cyan=user, Green=claude)
@@ -232,6 +247,21 @@ immediately spot which turns consumed the most context on tool output vs
 thinking vs user text. Compaction markers appear in the conversation where
 context was compressed, showing the token delta. Tool detail views now
 render code with syntax highlighting.
+
+**Markdown rendering enhancements:**
+- **Block quote rendering**: Left-border prefix `▎` in DarkGray with
+  dimmed text, indented 2-3 columns
+- **Link rendering**: Blue + underline text, URL shown in dimmed
+  parentheses after link text
+- **Horizontal rule**: Line of `─` characters spanning content width
+  in DarkGray
+- **Table rendering**: Box-drawing borders, per-column truncation,
+  fallback for tables wider than bubble
+- **Syntax highlighting for code blocks**: Enable `pulldown-cmark` +
+  `syntect` integration for language-aware code highlighting (was
+  deferred from v0.1.1 to manage binary size and complexity)
+- **Code block horizontal scrolling**: Per-block scroll state with
+  h/l keybindings when code block is focused (replaces truncation)
 
 **What is NOT in v0.3:**
 - No cross-session search
@@ -312,6 +342,7 @@ an async variant or wrapper.
 | Token attribution (7 categories) | Planned | 0.3.0 |
 | Compaction detection | Planned | 0.3.0 |
 | Syntax highlighting | Planned | 0.3.0 |
+| Markdown rendering enhancements | Planned | 0.3.0 |
 | Cross-session search | Planned | 0.4.0 |
 | Session comparison | Planned | 0.4.0 |
 | Project aggregate stats | Planned | 0.4.0 |
@@ -434,3 +465,9 @@ relevant features are implemented.
 - **`g`/`G` keybindings**: Jump-to-top/bottom navigation not yet
   implemented. Defer to a follow-up keybinding enhancement pass
   alongside `Ctrl-d`/`Ctrl-u` (half-page scroll).
+- **`BubbleLine` module extraction**: `BubbleLine` may need extraction
+  to its own module if other widgets (e.g., modal detail view) need
+  bubble rendering. Currently lives in `md_wrap.rs`.
+- **Unify wrapping implementations**: `word_wrap` and `markdown_wrap`
+  are two parallel wrapping implementations. Consider unifying them
+  to reduce duplication and ensure consistent wrapping behavior.
