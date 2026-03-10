@@ -9,6 +9,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use crate::app::AppState;
 use crate::data::model::SessionSummary;
 
+use super::text_utils::truncate_end;
+
 /// Render the session list into the given area.
 pub fn render_session_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let items: Vec<ListItem> = state
@@ -80,12 +82,7 @@ fn format_session_line(session: &SessionSummary) -> Line<'static> {
 
     // Last prompt (title).
     if let Some(ref prompt) = session.last_prompt {
-        let truncated = if prompt.chars().count() > 60 {
-            let s: String = prompt.chars().take(57).collect();
-            format!("{s}...")
-        } else {
-            prompt.clone()
-        };
+        let truncated = truncate_end(prompt, 60);
         spans.push(Span::styled(truncated, Style::default().fg(Color::White)));
     }
 
