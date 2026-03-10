@@ -45,10 +45,25 @@ pub fn spawn_event_reader(tx: mpsc::Sender<AppEvent>) {
 }
 
 /// Map a crossterm KeyEvent to an Action (if applicable).
-pub fn map_key_to_action(key: KeyEvent, show_help: bool, view: &View) -> Option<Action> {
+pub fn map_key_to_action(
+    key: KeyEvent,
+    show_help: bool,
+    view: &View,
+    modal_active: bool,
+) -> Option<Action> {
     // If help is showing, any key dismisses it.
     if show_help {
         return Some(Action::ToggleHelp);
+    }
+
+    // Modal bindings take priority when a modal is open.
+    if modal_active {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::DismissModal),
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::ModalScrollDown),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::ModalScrollUp),
+            _ => None,
+        };
     }
 
     // Global bindings (work in any view).
@@ -77,19 +92,15 @@ pub fn map_key_to_action(key: KeyEvent, show_help: bool, view: &View) -> Option<
             _ => None,
         },
         View::Conversation(_) => match key.code {
-            KeyCode::Char('j') | KeyCode::Down => Some(Action::NavigateDown),
-            KeyCode::Char('k') | KeyCode::Up => Some(Action::NavigateUp),
+            KeyCode::Char('j') => Some(Action::NextTurn),
+            KeyCode::Char('k') => Some(Action::PrevTurn),
+            KeyCode::Down => Some(Action::NavigateDown),
+            KeyCode::Up => Some(Action::NavigateUp),
+            KeyCode::Char('u') => Some(Action::ShowUserModal),
+            KeyCode::Char('c') => Some(Action::ShowClaudeModal),
             KeyCode::Char('t') => Some(Action::ToggleTokens),
             KeyCode::Char('o') => Some(Action::ToggleTools),
             KeyCode::Char('T') => Some(Action::ToggleThinking),
-            KeyCode::Char('n') => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    Some(Action::PrevTurn)
-                } else {
-                    Some(Action::NextTurn)
-                }
-            }
-            KeyCode::Char('N') => Some(Action::PrevTurn),
             _ => None,
         },
     }
@@ -133,73 +144,73 @@ mod tests {
 
     #[test]
     fn enter_maps_to_select_project_in_project_list() {
-        let action = map_key_to_action(key(KeyCode::Enter), false, &project_list_view());
+        let action = map_key_to_action(key(KeyCode::Enter), false, &project_list_view(), false);
         assert!(matches!(action, Some(Action::SelectProject)));
     }
 
     #[test]
     fn j_maps_to_navigate_down_in_project_list() {
-        let action = map_key_to_action(key(KeyCode::Char('j')), false, &project_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('j')), false, &project_list_view(), false);
         assert!(matches!(action, Some(Action::NavigateDown)));
     }
 
     #[test]
     fn k_maps_to_navigate_up_in_project_list() {
-        let action = map_key_to_action(key(KeyCode::Char('k')), false, &project_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('k')), false, &project_list_view(), false);
         assert!(matches!(action, Some(Action::NavigateUp)));
     }
 
     #[test]
     fn esc_maps_to_back_in_project_list() {
-        let action = map_key_to_action(key(KeyCode::Esc), false, &project_list_view());
+        let action = map_key_to_action(key(KeyCode::Esc), false, &project_list_view(), false);
         assert!(matches!(action, Some(Action::BackToList)));
     }
 
     #[test]
     fn q_maps_to_quit() {
-        let action = map_key_to_action(key(KeyCode::Char('q')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('q')), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::Quit)));
     }
 
     #[test]
     fn j_maps_to_navigate_down_in_session_list() {
-        let action = map_key_to_action(key(KeyCode::Char('j')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('j')), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::NavigateDown)));
     }
 
     #[test]
     fn k_maps_to_navigate_up_in_session_list() {
-        let action = map_key_to_action(key(KeyCode::Char('k')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('k')), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::NavigateUp)));
     }
 
     #[test]
     fn arrow_down_maps_to_navigate_down() {
-        let action = map_key_to_action(key(KeyCode::Down), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Down), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::NavigateDown)));
     }
 
     #[test]
     fn arrow_up_maps_to_navigate_up() {
-        let action = map_key_to_action(key(KeyCode::Up), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Up), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::NavigateUp)));
     }
 
     #[test]
     fn enter_maps_to_select_session_in_session_list() {
-        let action = map_key_to_action(key(KeyCode::Enter), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Enter), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::SelectSession)));
     }
 
     #[test]
     fn esc_maps_to_back_to_list() {
-        let action = map_key_to_action(key(KeyCode::Esc), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Esc), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::BackToList)));
     }
 
     #[test]
     fn question_mark_toggles_help() {
-        let action = map_key_to_action(key(KeyCode::Char('?')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('?')), false, &session_list_view(), false);
         assert!(matches!(action, Some(Action::ToggleHelp)));
     }
 
@@ -209,107 +220,154 @@ mod tests {
             key_with_mod(KeyCode::Char('c'), KeyModifiers::CONTROL),
             false,
             &session_list_view(),
+            false,
         );
         assert!(matches!(action, Some(Action::Quit)));
     }
 
     #[test]
     fn unknown_key_returns_none() {
-        let action = map_key_to_action(key(KeyCode::Char('x')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('x')), false, &session_list_view(), false);
         assert!(action.is_none());
     }
 
     #[test]
     fn help_visible_any_key_dismisses() {
-        let action = map_key_to_action(key(KeyCode::Char('x')), true, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('x')), true, &session_list_view(), false);
         assert!(matches!(action, Some(Action::ToggleHelp)));
     }
 
     #[test]
-    fn n_maps_to_next_turn_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('n')), false, &conversation_view());
+    fn j_maps_to_next_turn_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('j')), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::NextTurn)));
     }
 
     #[test]
-    fn shift_n_maps_to_prev_turn_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('N')), false, &conversation_view());
+    fn k_maps_to_prev_turn_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('k')), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::PrevTurn)));
     }
 
     #[test]
-    fn j_scrolls_down_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('j')), false, &conversation_view());
+    fn arrow_down_scrolls_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Down), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::NavigateDown)));
     }
 
     #[test]
-    fn k_scrolls_up_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('k')), false, &conversation_view());
+    fn arrow_up_scrolls_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Up), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::NavigateUp)));
     }
 
     #[test]
+    fn u_maps_to_show_user_modal_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('u')), false, &conversation_view(), false);
+        assert!(matches!(action, Some(Action::ShowUserModal)));
+    }
+
+    #[test]
+    fn c_maps_to_show_claude_modal_in_conversation() {
+        let action = map_key_to_action(key(KeyCode::Char('c')), false, &conversation_view(), false);
+        assert!(matches!(action, Some(Action::ShowClaudeModal)));
+    }
+
+    #[test]
     fn enter_does_nothing_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Enter), false, &conversation_view());
+        let action = map_key_to_action(key(KeyCode::Enter), false, &conversation_view(), false);
         assert!(action.is_none());
     }
 
     #[test]
     fn esc_maps_to_back_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Esc), false, &conversation_view());
+        let action = map_key_to_action(key(KeyCode::Esc), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::BackToList)));
     }
 
     #[test]
-    fn shift_n_with_modifier_maps_to_prev_turn() {
-        let action = map_key_to_action(
-            key_with_mod(KeyCode::Char('n'), KeyModifiers::SHIFT),
-            false,
-            &conversation_view(),
-        );
-        assert!(matches!(action, Some(Action::PrevTurn)));
-    }
-
-    #[test]
     fn t_maps_to_toggle_tokens_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('t')), false, &conversation_view());
+        let action = map_key_to_action(key(KeyCode::Char('t')), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::ToggleTokens)));
     }
 
     #[test]
     fn t_does_nothing_in_session_list() {
-        let action = map_key_to_action(key(KeyCode::Char('t')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('t')), false, &session_list_view(), false);
         assert!(action.is_none());
     }
 
     #[test]
     fn q_maps_to_quit_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('q')), false, &conversation_view());
+        let action = map_key_to_action(key(KeyCode::Char('q')), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::Quit)));
     }
 
     #[test]
     fn o_maps_to_toggle_tools_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('o')), false, &conversation_view());
+        let action = map_key_to_action(key(KeyCode::Char('o')), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::ToggleTools)));
     }
 
     #[test]
     fn o_does_nothing_in_session_list() {
-        let action = map_key_to_action(key(KeyCode::Char('o')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('o')), false, &session_list_view(), false);
         assert!(action.is_none());
     }
 
     #[test]
     fn shift_t_maps_to_toggle_thinking_in_conversation() {
-        let action = map_key_to_action(key(KeyCode::Char('T')), false, &conversation_view());
+        let action = map_key_to_action(key(KeyCode::Char('T')), false, &conversation_view(), false);
         assert!(matches!(action, Some(Action::ToggleThinking)));
     }
 
     #[test]
     fn shift_t_does_nothing_in_session_list() {
-        let action = map_key_to_action(key(KeyCode::Char('T')), false, &session_list_view());
+        let action = map_key_to_action(key(KeyCode::Char('T')), false, &session_list_view(), false);
+        assert!(action.is_none());
+    }
+
+    // --- Modal key handling tests ---
+
+    #[test]
+    fn modal_esc_dismisses_modal() {
+        let action = map_key_to_action(key(KeyCode::Esc), false, &conversation_view(), true);
+        assert!(matches!(action, Some(Action::DismissModal)));
+    }
+
+    #[test]
+    fn modal_q_dismisses_modal() {
+        let action = map_key_to_action(key(KeyCode::Char('q')), false, &conversation_view(), true);
+        assert!(matches!(action, Some(Action::DismissModal)));
+    }
+
+    #[test]
+    fn modal_j_scrolls_down() {
+        let action = map_key_to_action(key(KeyCode::Char('j')), false, &conversation_view(), true);
+        assert!(matches!(action, Some(Action::ModalScrollDown)));
+    }
+
+    #[test]
+    fn modal_k_scrolls_up() {
+        let action = map_key_to_action(key(KeyCode::Char('k')), false, &conversation_view(), true);
+        assert!(matches!(action, Some(Action::ModalScrollUp)));
+    }
+
+    #[test]
+    fn modal_arrow_down_scrolls_down() {
+        let action = map_key_to_action(key(KeyCode::Down), false, &conversation_view(), true);
+        assert!(matches!(action, Some(Action::ModalScrollDown)));
+    }
+
+    #[test]
+    fn modal_arrow_up_scrolls_up() {
+        let action = map_key_to_action(key(KeyCode::Up), false, &conversation_view(), true);
+        assert!(matches!(action, Some(Action::ModalScrollUp)));
+    }
+
+    #[test]
+    fn modal_other_keys_return_none() {
+        let action = map_key_to_action(key(KeyCode::Char('x')), false, &conversation_view(), true);
         assert!(action.is_none());
     }
 }

@@ -108,8 +108,9 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
                 // Keybinding hints in priority order (last dropped first).
                 let hints: &[&str] = if token_total > 0 {
                     &[
-                        " | n/N: jump",
-                        " | j/k: scroll",
+                        " | j/k: turn",
+                        " | u: user",
+                        " | c: claude",
                         " | o: tools",
                         " | T: thinking",
                         " | t: tokens",
@@ -118,8 +119,9 @@ fn build_status_spans_for_width<'a>(state: &AppState, max_width: usize) -> Vec<S
                     ]
                 } else {
                     &[
-                        " | n/N: jump",
-                        " | j/k: scroll",
+                        " | j/k: turn",
+                        " | u: user",
+                        " | c: claude",
                         " | o: tools",
                         " | T: thinking",
                         " | Esc: back",
@@ -452,8 +454,40 @@ mod tests {
             "Very narrow should keep Turn info: {text}"
         );
         assert!(
-            !text.contains("n/N"),
+            !text.contains("j/k"),
             "Very narrow should drop keybinding hints: {text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_jk_turn_hint() {
+        let mut state = AppState::new();
+        let session = make_session_with_tokens(2, TokenUsage::default());
+        state.current_session = Some(session);
+        state.view = View::Conversation(SessionId("test".to_string()));
+
+        let text = build_status_text(&state);
+        assert!(
+            text.contains("j/k: turn"),
+            "Expected j/k turn hint, got: {text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_u_c_modal_hints() {
+        let mut state = AppState::new();
+        let session = make_session_with_tokens(2, TokenUsage::default());
+        state.current_session = Some(session);
+        state.view = View::Conversation(SessionId("test".to_string()));
+
+        let text = build_status_text(&state);
+        assert!(
+            text.contains("u: user"),
+            "Expected u: user hint, got: {text}"
+        );
+        assert!(
+            text.contains("c: claude"),
+            "Expected c: claude hint, got: {text}"
         );
     }
 

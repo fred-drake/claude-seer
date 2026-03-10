@@ -73,19 +73,48 @@ fn build_right_spans(state: &AppState) -> Vec<Span<'static>> {
     spans
 }
 
+/// Build spans showing enabled display options (e.g. "+tool +think +token").
+fn build_display_option_spans(state: &AppState) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let opts = &state.display;
+
+    let flags: &[(&str, bool)] = &[
+        ("+tool", opts.show_tools),
+        ("+think", opts.show_thinking),
+        ("+token", opts.show_tokens),
+    ];
+
+    for &(label, enabled) in flags {
+        if enabled {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
+    spans
+}
+
 /// Render the title bar into the given area.
 pub fn render_title_bar(frame: &mut Frame, area: Rect, state: &AppState) {
     let left_spans = build_left_spans(state);
+    let display_spans = build_display_option_spans(state);
     let right_spans = build_right_spans(state);
 
     // Calculate widths using Unicode-aware width.
     let left_width: usize = left_spans.iter().map(|s| s.width()).sum();
+    let display_width: usize = display_spans.iter().map(|s| s.width()).sum();
     let right_width: usize = right_spans.iter().map(|s| s.width()).sum();
     let total_width = area.width as usize;
 
     // Build the full line with padding between left and right.
     let mut spans = left_spans;
-    let padding_len = total_width.saturating_sub(left_width + right_width);
+    spans.extend(display_spans);
+    let padding_len = total_width.saturating_sub(left_width + display_width + right_width);
     spans.push(Span::styled(
         " ".repeat(padding_len),
         Style::default().bg(Color::DarkGray),
@@ -189,6 +218,51 @@ mod tests {
     fn usage_color_red_for_high() {
         assert_eq!(usage_color(80.0), Color::Red);
         assert_eq!(usage_color(100.0), Color::Red);
+    }
+
+    #[test]
+    fn display_options_shows_tool_when_enabled() {
+        let mut state = AppState::new();
+        state.display.show_tools = true;
+        let spans = build_display_option_spans(&state);
+        let text = spans_to_text(&spans);
+        assert!(text.contains("+tool"), "got: {text}");
+    }
+
+    #[test]
+    fn display_options_shows_think_when_enabled() {
+        let mut state = AppState::new();
+        state.display.show_thinking = true;
+        let spans = build_display_option_spans(&state);
+        let text = spans_to_text(&spans);
+        assert!(text.contains("+think"), "got: {text}");
+    }
+
+    #[test]
+    fn display_options_shows_token_when_enabled() {
+        let mut state = AppState::new();
+        state.display.show_tokens = true;
+        let spans = build_display_option_spans(&state);
+        let text = spans_to_text(&spans);
+        assert!(text.contains("+token"), "got: {text}");
+    }
+
+    #[test]
+    fn display_options_empty_when_none_enabled() {
+        let state = AppState::new();
+        let spans = build_display_option_spans(&state);
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn display_options_shows_multiple() {
+        let mut state = AppState::new();
+        state.display.show_tools = true;
+        state.display.show_tokens = true;
+        let spans = build_display_option_spans(&state);
+        let text = spans_to_text(&spans);
+        assert!(text.contains("+tool"), "got: {text}");
+        assert!(text.contains("+token"), "got: {text}");
     }
 
     #[test]

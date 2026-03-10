@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use crate::data::model::{ProjectPath, ProjectSummary, Session, SessionId, SessionSummary};
+use crate::data::model::{
+    ContentBlock, ProjectPath, ProjectSummary, Session, SessionId, SessionSummary, Turn,
+    UserContent,
+};
 use crate::data::usage::{TitleBarInfo, UsageData};
 
 /// The view the TUI should render.
@@ -45,6 +48,40 @@ impl DisplayOptions {
     pub fn any_detail_enabled(&self) -> bool {
         self.show_tokens || self.show_tools || self.show_thinking
     }
+
+    /// Whether a turn produces visible output with current display settings.
+    pub fn is_turn_visible(&self, turn: &Turn) -> bool {
+        // User content visible?
+        let user_visible = match &turn.user_message.content {
+            UserContent::Text(t) => !t.is_empty(),
+            UserContent::ToolResults(_) => self.show_tools,
+            UserContent::Mixed { text, .. } => !text.is_empty() || self.show_tools,
+        };
+        if user_visible {
+            return true;
+        }
+
+        // Assistant content visible?
+        if let Some(ref response) = turn.assistant_response {
+            for block in &response.content_blocks {
+                match block {
+                    ContentBlock::Text(t) if !t.is_empty() => return true,
+                    ContentBlock::Thinking { .. } if self.show_thinking => return true,
+                    ContentBlock::ToolUse(_) if self.show_tools => return true,
+                    _ => {}
+                }
+            }
+        }
+
+        false
+    }
+}
+
+/// Which modal overlay is showing.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ModalContent {
+    User,
+    Claude,
 }
 
 /// All possible user/system actions.
@@ -58,6 +95,11 @@ pub enum Action {
     BackToList,
     NextTurn,
     PrevTurn,
+    ShowUserModal,
+    ShowClaudeModal,
+    DismissModal,
+    ModalScrollDown,
+    ModalScrollUp,
     Resize(u16, u16),
     ProjectsLoaded(Vec<ProjectSummary>),
     SessionsLoaded(Vec<SessionSummary>),
@@ -99,6 +141,8 @@ pub struct AppState {
     pub scroll_offset: usize,
     pub last_error: Option<String>,
     pub title_bar: TitleBarInfo,
+    pub modal: Option<ModalContent>,
+    pub modal_scroll: usize,
 }
 
 impl Default for AppState {
@@ -126,6 +170,8 @@ impl AppState {
             scroll_offset: 0,
             last_error: None,
             title_bar: TitleBarInfo::new(),
+            modal: None,
+            modal_scroll: 0,
         }
     }
 
@@ -320,20 +366,32 @@ impl AppState {
             }
 
             Action::NextTurn => {
-                if let Some(ref session) = self.current_session
-                    && !session.turns.is_empty()
-                    && self.current_turn_index < session.turns.len() - 1
-                {
-                    self.current_turn_index += 1;
-                    self.scroll_offset = 0;
+                if let Some(ref session) = self.current_session {
+                    let len = session.turns.len();
+                    let mut next = self.current_turn_index + 1;
+                    while next < len && !self.display.is_turn_visible(&session.turns[next]) {
+                        next += 1;
+                    }
+                    if next < len {
+                        self.current_turn_index = next;
+                        self.scroll_offset = 0;
+                    }
                 }
                 None
             }
 
             Action::PrevTurn => {
-                if self.current_session.is_some() && self.current_turn_index > 0 {
-                    self.current_turn_index -= 1;
-                    self.scroll_offset = 0;
+                if let Some(ref session) = self.current_session {
+                    let mut prev = self.current_turn_index.saturating_sub(1);
+                    while prev > 0 && !self.display.is_turn_visible(&session.turns[prev]) {
+                        prev -= 1;
+                    }
+                    if prev < self.current_turn_index
+                        && self.display.is_turn_visible(&session.turns[prev])
+                    {
+                        self.current_turn_index = prev;
+                        self.scroll_offset = 0;
+                    }
                 }
                 None
             }
@@ -350,6 +408,34 @@ impl AppState {
 
             Action::UsageLoaded(usage) => {
                 self.title_bar.usage = Some(usage);
+                None
+            }
+
+            Action::ShowUserModal => {
+                self.modal = Some(ModalContent::User);
+                self.modal_scroll = 0;
+                None
+            }
+
+            Action::ShowClaudeModal => {
+                self.modal = Some(ModalContent::Claude);
+                self.modal_scroll = 0;
+                None
+            }
+
+            Action::DismissModal => {
+                self.modal = None;
+                self.modal_scroll = 0;
+                None
+            }
+
+            Action::ModalScrollDown => {
+                self.modal_scroll = self.modal_scroll.saturating_add(1);
+                None
+            }
+
+            Action::ModalScrollUp => {
+                self.modal_scroll = self.modal_scroll.saturating_sub(1);
                 None
             }
         }
@@ -1118,6 +1204,86 @@ mod tests {
         let effect = state.handle_action(Action::VersionLoaded("2.1.71".to_string()));
         assert_eq!(effect, None);
         assert_eq!(state.title_bar.claude_version, Some("2.1.71".to_string()));
+    }
+
+    #[test]
+    fn new_app_state_modal_is_none() {
+        let state = AppState::new();
+        assert_eq!(state.modal, None);
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn show_user_modal_sets_modal_state() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        let effect = state.handle_action(Action::ShowUserModal);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal, Some(ModalContent::User));
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn show_claude_modal_sets_modal_state() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        let effect = state.handle_action(Action::ShowClaudeModal);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal, Some(ModalContent::Claude));
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn dismiss_modal_clears_modal_state() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        state.modal_scroll = 5;
+        let effect = state.handle_action(Action::DismissModal);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal, None);
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn modal_scroll_down_increments() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        let effect = state.handle_action(Action::ModalScrollDown);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal_scroll, 1);
+        state.handle_action(Action::ModalScrollDown);
+        assert_eq!(state.modal_scroll, 2);
+    }
+
+    #[test]
+    fn modal_scroll_up_decrements_saturating() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        state.modal_scroll = 3;
+        let effect = state.handle_action(Action::ModalScrollUp);
+        assert_eq!(effect, None);
+        assert_eq!(state.modal_scroll, 2);
+    }
+
+    #[test]
+    fn modal_scroll_up_stops_at_zero() {
+        let mut state = AppState::new();
+        state.modal = Some(ModalContent::User);
+        state.modal_scroll = 0;
+        state.handle_action(Action::ModalScrollUp);
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn show_user_modal_resets_scroll() {
+        let mut state = AppState::new();
+        let session = make_session("sess-1", 3);
+        state.handle_action(Action::SessionLoaded(Box::new(session)));
+        state.modal_scroll = 10;
+        state.handle_action(Action::ShowUserModal);
+        assert_eq!(state.modal_scroll, 0);
     }
 
     #[test]
