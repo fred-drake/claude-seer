@@ -4,16 +4,18 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, DisplayOptions};
+use crate::data::classify::{UserMessageKind, classify_user_text};
 use crate::data::model::{
     ContentBlock, Session, TokenUsage, ToolName, ToolResult, Turn, UserContent, format_tokens,
 };
 
-use super::text_utils::truncate_end;
+use super::md_wrap::{BubbleLine, markdown_wrap};
+use super::text_utils::{truncate_end, truncate_to_width};
 
 pub(crate) const TOOL_ICON_SUCCESS: &str = "◆";
 pub(crate) const TOOL_ICON_ERROR: &str = "✗";
@@ -43,15 +45,19 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     };
 
+    let title = format!(" session {} ", session.id.0);
+    let block = Block::default().title(title).borders(Borders::ALL);
+    let inner = block.inner(area);
+
     let (lines, current_turn_start) = build_conversation_lines(
         session,
         state.current_turn_index,
         &state.display,
-        area.width,
+        inner.width,
     );
 
     let total_lines = lines.len();
-    let visible_height = area.height as usize;
+    let visible_height = inner.height as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
     // Use current turn's start line as scroll base so n/N navigation
     // (which resets scroll_offset to 0) shows the selected turn at top.
@@ -60,7 +66,8 @@ pub fn render_conversation(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let paragraph = Paragraph::new(lines).scroll((clamped_scroll as u16, 0));
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(block, area);
+    frame.render_widget(paragraph, inner);
 }
 
 /// Calculate the bubble width for chat messages.
@@ -202,12 +209,6 @@ fn build_conversation_lines(
     (lines, current_turn_start_line)
 }
 
-/// A line of content to be placed inside a bubble.
-struct BubbleLine {
-    text: String,
-    style: Style,
-}
-
 /// Build a chat bubble around content lines using box-drawing characters.
 ///
 /// Returns `Vec<Line>` containing: top border, content lines, bottom border.
@@ -223,7 +224,7 @@ fn make_bubble(
     // Find the actual widest content line.
     let actual_width = content_lines
         .iter()
-        .map(|bl| UnicodeWidthStr::width(bl.text.as_str()))
+        .map(|bl| bl.display_width)
         .max()
         .unwrap_or(0)
         .min(max_inner_width);
@@ -248,14 +249,14 @@ fn make_bubble(
 
     // Content lines: │ text... │
     for bl in content_lines {
-        let text_width = UnicodeWidthStr::width(bl.text.as_str());
-        let pad_right = inner_width.saturating_sub(text_width);
-        lines.push(Line::from(vec![
-            Span::raw(padding.clone()),
-            Span::styled("│ ", border_style),
-            Span::styled(bl.text.clone(), bl.style),
-            Span::styled(format!("{} │", " ".repeat(pad_right)), border_style),
-        ]));
+        let pad_right = inner_width.saturating_sub(bl.display_width);
+        let mut spans = vec![Span::raw(padding.clone()), Span::styled("│ ", border_style)];
+        spans.extend(bl.spans.iter().cloned());
+        spans.push(Span::styled(
+            format!("{} │", " ".repeat(pad_right)),
+            border_style,
+        ));
+        lines.push(Line::from(spans));
     }
 
     // Bottom border: ╰───...───╯
@@ -299,13 +300,29 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
     let has_user_bubble = !user_text.is_empty();
 
     if has_user_bubble {
-        // Label -- right-aligned above the bubble.
+        // Classify the message to determine label and display text.
         let is_tool_result = matches!(&turn.user_message.content, UserContent::ToolResults(_));
-        let label_text = if is_tool_result {
-            "Tool Result:"
+        let kind = if is_tool_result {
+            None // Tool results keep their own label logic.
         } else {
-            "User:"
+            Some(classify_user_text(&user_text))
         };
+
+        let (label_text, label_color): (String, Color) = if is_tool_result {
+            ("Tool Result:".to_string(), Color::Cyan)
+        } else {
+            match &kind {
+                Some(UserMessageKind::System(_)) => ("System:".to_string(), Color::Yellow),
+                Some(UserMessageKind::Command { .. }) => {
+                    ("User Command:".to_string(), Color::Magenta)
+                }
+                Some(UserMessageKind::TaskNotification { status, .. }) => {
+                    (format!("Task Response ({status}):"), Color::Yellow)
+                }
+                _ => ("User:".to_string(), Color::Cyan),
+            }
+        };
+
         let mut label_spans = Vec::new();
         if padding_cols > 0 {
             label_spans.push(Span::raw(" ".repeat(padding_cols)));
@@ -313,25 +330,69 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
         label_spans.push(Span::styled(
             label_text,
             Style::default()
-                .fg(Color::Cyan)
+                .fg(label_color)
                 .add_modifier(Modifier::BOLD),
         ));
         lines.push(Line::from(label_spans));
 
-        let wrapped = word_wrap(&user_text, content_width);
-        let bubble_lines: Vec<BubbleLine> = wrapped
-            .into_iter()
-            .map(|text| BubbleLine {
-                text,
-                style: text_style,
-            })
-            .collect();
-        lines.extend(make_bubble(
-            &bubble_lines,
-            user_border_color,
-            padding_cols,
-            content_width,
-        ));
+        // Show task summary below label, before bubble.
+        if let Some(UserMessageKind::TaskNotification { summary, .. }) = &kind
+            && !summary.is_empty()
+        {
+            let mut summary_spans = Vec::new();
+            if padding_cols > 0 {
+                summary_spans.push(Span::raw(" ".repeat(padding_cols)));
+            }
+            summary_spans.push(Span::styled(
+                summary.clone(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+            lines.push(Line::from(summary_spans));
+        }
+
+        // Build bubble content based on message kind.
+        let bubble_lines: Vec<BubbleLine> = match &kind {
+            Some(UserMessageKind::System(stripped)) => {
+                let wrapped = word_wrap(stripped, content_width);
+                wrapped
+                    .into_iter()
+                    .map(|text| BubbleLine::plain(text, Style::default().fg(Color::Yellow)))
+                    .collect()
+            }
+            Some(UserMessageKind::Command { command, args }) => {
+                let display = if args.is_empty() {
+                    command.clone()
+                } else {
+                    format!("{command} {args}")
+                };
+                let wrapped = word_wrap(&display, content_width);
+                wrapped
+                    .into_iter()
+                    .map(|text| BubbleLine::plain(text, Style::default().fg(Color::Magenta)))
+                    .collect()
+            }
+            Some(UserMessageKind::TaskNotification { result, .. }) => {
+                markdown_wrap(result, content_width, text_style, ctx.is_current)
+            }
+            _ => {
+                let wrapped = word_wrap(&user_text, content_width);
+                wrapped
+                    .into_iter()
+                    .map(|text| BubbleLine::plain(text, text_style))
+                    .collect()
+            }
+        };
+        let has_content = bubble_lines.iter().any(|bl| bl.display_width > 0);
+        if has_content {
+            lines.extend(make_bubble(
+                &bubble_lines,
+                user_border_color,
+                padding_cols,
+                content_width,
+            ));
+        }
     }
 
     // Assistant response.
@@ -347,22 +408,22 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
             match block {
                 ContentBlock::Text(text) => {
                     has_text = true;
-                    let wrapped = word_wrap(text, content_width);
-                    for wline in wrapped {
-                        bubble_content.push(BubbleLine {
-                            text: wline,
-                            style: asst_text,
-                        });
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        continue;
                     }
+                    let md_lines = markdown_wrap(trimmed, content_width, asst_text, ctx.is_current);
+                    bubble_content.extend(md_lines);
                 }
                 ContentBlock::Thinking { text } => {
                     if ctx.display.show_thinking {
+                        let thinking_style = Style::default().fg(Color::DarkGray);
                         let wrapped = word_wrap(text, content_width.saturating_sub(4));
                         for wline in wrapped {
-                            bubble_content.push(BubbleLine {
-                                text: format!("  {THINKING_ICON} {wline}"),
-                                style: Style::default().fg(Color::DarkGray),
-                            });
+                            bubble_content.push(BubbleLine::plain(
+                                format!("  {THINKING_ICON} {wline}"),
+                                thinking_style,
+                            ));
                         }
                     }
                 }
@@ -371,10 +432,10 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                     if ctx.display.show_tools {
                         let icon = tool_icon(&tc.result);
                         let summary = tool_summary(&tc.name, &tc.input);
-                        bubble_content.push(BubbleLine {
-                            text: format!("  {icon} {}  {summary}", tc.name),
-                            style: Style::default().fg(Color::Magenta),
-                        });
+                        let full = format!("  {icon} {}  {summary}", tc.name);
+                        let text = truncate_to_width(&full, content_width);
+                        bubble_content
+                            .push(BubbleLine::plain(text, Style::default().fg(Color::Magenta)));
                     }
                 }
             }
@@ -1486,6 +1547,109 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_lines_system_message_label() {
+        let raw = "<local-command-caveat>You have permission to run local commands</local-command-caveat>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(text.contains("System:"), "Should show System label: {text}");
+        assert!(
+            !text.contains("User:"),
+            "Should NOT show User label: {text}"
+        );
+        // Should show stripped content, not XML tags.
+        assert!(!text.contains('<'), "Should not contain XML tags: {text}");
+        assert!(
+            text.contains("permission"),
+            "Should show stripped content: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_command_message_label() {
+        let raw = "<command-name>/clear</command-name><command-args></command-args><command-message>clearing</command-message>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("cleared".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("User Command:"),
+            "Should show User Command label: {text}"
+        );
+        assert!(text.contains("/clear"), "Should show command name: {text}");
+    }
+
+    #[test]
+    fn build_turn_lines_command_with_args_shows_both() {
+        let raw = "<command-name>/model</command-name><command-args>opus</command-args><command-message>switching</command-message>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("switched".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(text.contains("/model"), "Should show command name: {text}");
+        assert!(text.contains("opus"), "Should show command args: {text}");
+    }
+
+    #[test]
+    fn tool_use_line_truncated_to_content_width() {
+        let long_path = "/a/".to_string() + &"x".repeat(200);
+        let turn = make_turn(
+            0,
+            "hello",
+            vec![ContentBlock::ToolUse(ToolCall {
+                id: "tc-1".to_string(),
+                name: ToolName::Read,
+                input: serde_json::json!({"file_path": long_path}),
+                result: None,
+            })],
+        );
+        let default_usage = TokenUsage::default();
+        let opts = DisplayOptions {
+            show_tools: true,
+            ..DisplayOptions::default()
+        };
+        let c = ctx(false, opts, &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains('\u{2026}'),
+            "Long tool path should be truncated with ellipsis: {text}"
+        );
+    }
+
+    #[test]
+    fn assistant_text_renders_markdown_bold() {
+        let turn = make_turn(
+            0,
+            "hello",
+            vec![ContentBlock::Text("This is **bold** text".to_string())],
+        );
+        let default_usage = TokenUsage::default();
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        // Find the line containing "bold" in the assistant bubble.
+        let bold_spans: Vec<&Span> = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| {
+                s.content.contains("bold")
+                    && s.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::BOLD)
+            })
+            .collect();
+        assert!(
+            !bold_spans.is_empty(),
+            "Should have bold span in assistant text. Lines: {}",
+            lines_text(&lines)
+        );
+    }
+
+    #[test]
     fn tool_only_turn_shown_when_tools_enabled() {
         let turn = make_turn(
             0,
@@ -1512,5 +1676,60 @@ mod tests {
         // Tool-only turns should show Claude label and tools when enabled.
         assert!(text.contains("Claude:"), "Should show Claude label: {text}");
         assert!(text.contains("Read"), "Should show tool names: {text}");
+    }
+
+    #[test]
+    fn build_turn_lines_task_notification_label() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content</result>\n</task-notification>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("Task Response (completed):"),
+            "Should show task response label: {text}"
+        );
+        assert!(
+            !text.contains("User:"),
+            "Should NOT show User label: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_task_notification_shows_summary() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content</result>\n</task-notification>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("Agent completed task"),
+            "Should show summary: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_task_notification_shows_result_in_bubble() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content</result>\n</task-notification>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("The result content"),
+            "Should show result in bubble: {text}"
+        );
+        // Should NOT show raw XML tags.
+        assert!(
+            !text.contains("<task-id>"),
+            "Should not show raw XML: {text}"
+        );
+        assert!(
+            !text.contains("<status>"),
+            "Should not show raw XML: {text}"
+        );
     }
 }

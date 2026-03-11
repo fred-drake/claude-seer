@@ -68,12 +68,11 @@ pub fn map_key_to_action(
 
     // Global bindings (work in any view).
     match key.code {
-        KeyCode::Char('q') => return Some(Action::Quit),
+        KeyCode::Char('q') | KeyCode::Esc => return Some(Action::BackToList),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Some(Action::Quit);
         }
         KeyCode::Char('?') => return Some(Action::ToggleHelp),
-        KeyCode::Esc => return Some(Action::BackToList),
         _ => {}
     }
 
@@ -167,9 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn q_maps_to_quit() {
+    fn q_maps_to_back_to_list() {
         let action = map_key_to_action(key(KeyCode::Char('q')), false, &session_list_view(), false);
-        assert!(matches!(action, Some(Action::Quit)));
+        assert!(matches!(action, Some(Action::BackToList)));
     }
 
     #[test]
@@ -298,9 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn q_maps_to_quit_in_conversation() {
+    fn q_maps_to_back_to_list_in_conversation() {
         let action = map_key_to_action(key(KeyCode::Char('q')), false, &conversation_view(), false);
-        assert!(matches!(action, Some(Action::Quit)));
+        assert!(matches!(action, Some(Action::BackToList)));
     }
 
     #[test]
