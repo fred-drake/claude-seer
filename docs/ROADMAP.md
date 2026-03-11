@@ -1,6 +1,6 @@
 # Claude Seer - Product Roadmap
 
-Last Updated: 2026-03-10 | Version: 0.1.1 (chat-style conversation redesign)
+Last Updated: 2026-03-11 | Version: 0.1.1 (chat-style conversation redesign)
 
 ## Vision
 
@@ -107,8 +107,9 @@ open a project and see its sessions — each with date/time, message count,
 branch name, and first prompt. Press `Enter` again to open a session, and
 the view fills with the conversation. You scroll through messages, jump
 between turns with `n`/`N`, and see token counts alongside each assistant
-response. Press `Esc` to navigate back through the hierarchy. Press `q` to
-out or quit. Use `--path /custom/path` for non-standard installs.
+response. Press `q` or `Esc` to navigate back through the hierarchy
+(Conversation → SessionList → ProjectList → exit). Press `Ctrl+C` to
+quit immediately. Use `--path /custom/path` for non-standard installs.
 
 **Milestones:**
 1. JSONL parser library — data layer with error type skeletons
@@ -135,8 +136,7 @@ out or quit. Use `--path /custom/path` for non-standard installs.
   of what contributed to the context window
 - No compaction detection — token drops between turns are not flagged
 - No subagent/team visualization — subagent tool calls appear as regular
-  tool calls without tree structure (task notification results are rendered
-  cleanly with status, summary, and result content)
+  tool calls without tree structure
 - No SSH remote access — local `~/.claude/` only
 - No rich error diagnostics (miette) — basic error/warning messages
   appear in the status bar, but miette-style rich context (source
@@ -154,6 +154,8 @@ with Green borders. The clean default hides tool calls, thinking
 blocks, and token counts — showing only final text output.
 
 **Keybindings (updated):**
+- `q` / `Esc` — Navigate back (Conversation→SessionList→ProjectList→exit)
+- `Ctrl+C` — Quit immediately (the only direct quit shortcut)
 - `j` / `k` — Next / previous turn (remapped from n/N)
 - `Down` / `Up` — Scroll conversation (remapped from j/k)
 - `u` — Open user message modal (full text, scrollable)
@@ -163,6 +165,24 @@ blocks, and token counts — showing only final text output.
 - `T` — Toggle thinking block visibility (icon: `○`)
 - `t` — Toggle token display (unchanged, but default is now OFF)
 - Modal keys: `j`/`k`/arrows scroll, `Esc`/`q` dismiss
+
+**User message classification:**
+- System messages (`<local-command-caveat>`) shown with "System:" label
+  in Yellow, XML tags stripped
+- User commands (`/clear`, `/model`, etc.) shown with "User Command:"
+  label in Magenta, command name and args displayed
+- Task notifications from subagents shown with "Task Response (status):"
+  label in Yellow, summary line in DarkGray italic, result rendered as
+  markdown in bubble; modal (`u` key) shows structured properties
+  (Task ID, Tool Use ID, Output File, Status, Summary) before result
+- Tool use lines truncated with ellipsis `…` when exceeding bubble width
+
+**Classification module** (`data/classify.rs`):
+- `UserMessageKind` enum: Normal, System, Command, TaskNotification
+- `classify_user_text()` — pure data classification from raw JSONL text
+- `extract_tag_content()` — XML tag extraction (forward-search, assumes
+  content won't contain exact closing tag)
+- `strip_xml_tags()` — removes all XML tags for system message display
 
 **Architecture changes:**
 - `DisplayOptions` struct in `app.rs` replaces standalone `show_tokens`
@@ -180,10 +200,12 @@ blocks, and token counts — showing only final text output.
 - `BubbleLine` struct moved from conversation.rs to md_wrap.rs with rich spans
 - `unicode-width` added as direct dependency for column-accurate wrapping
 - **Markdown UX polish** (2026-03-10):
-  - Truncation indicator: `hard_truncate` appends ellipsis when clipping
+  - Truncation indicator: `truncate_to_width` appends ellipsis `…` when
+    clipping (consolidated in `text_utils.rs`, shared by md_wrap and
+    conversation widgets)
   - Inline code: White on DarkGray background (was Yellow foreground)
   - Code blocks: left-border prefix `▎ ` + White on DarkGray background
-  - Non-current turn dimming: code uses Gray on Black for non-current turns
+  - Non-current turn dimming: code uses Gray fg, no bg (inherits terminal)
   - Blank line separation before/after code blocks
   - Continuation indent for wrapped list items (aligns with text start)
   - `is_current_turn` parameter added to `markdown_wrap()` for style selection
@@ -338,6 +360,12 @@ an async variant or wrapper.
 | Conversation viewer + turn nav | Done | 0.1.0 |
 | Token usage display | Done | 0.1.0 |
 | Application shell | Done | 0.1.0 |
+| Chat-style conversation redesign | Done | 0.1.1 |
+| Markdown rendering (pulldown-cmark) | Done | 0.1.1 |
+| User message classification | Done | 0.1.1 |
+| Task notification rendering | Done | 0.1.1 |
+| q/Esc back-navigation | Done | 0.1.1 |
+| JSON syntax highlighting (modal) | Done | 0.1.1 |
 | Tool detail view | Planned | 0.2.0 |
 | Within-session search | Planned | 0.2.0 |
 | Token attribution (7 categories) | Planned | 0.3.0 |
@@ -472,3 +500,20 @@ relevant features are implemented.
 - **Unify wrapping implementations**: `word_wrap` and `markdown_wrap`
   are two parallel wrapping implementations. Consider unifying them
   to reduce duplication and ensure consistent wrapping behavior.
+- **Extract JSON highlighting module**: `json_highlight_line`,
+  `json_value_spans`, `json_value_color`, and `find_key_end` in
+  `modal.rs` (~120 lines) are a self-contained, reusable concern.
+  Extract to `tui/widgets/json_highlight.rs` when tool detail views
+  (v0.2) need the same highlighting.
+- **`extract_tag_content` closing-tag limitation**: Uses forward
+  search for `</tag>` — if content contains the exact closing tag
+  string, it would truncate early. Unlikely with Claude Code's
+  controlled format but worth noting if parsing more complex XML.
+- **Markdown re-parsing per frame**: `markdown_wrap` is called every
+  render frame. For sessions with 100+ turns, consider caching
+  `Vec<BubbleLine>` per content block with invalidation on terminal
+  resize or display option change.
+- **Non-current turn code styling**: After review, non-current
+  inline code and code blocks now omit `bg(Color::Black)` to avoid
+  jarring rectangles on non-black terminal backgrounds. Uses
+  `fg(Color::Gray)` only, inheriting the terminal's native bg.

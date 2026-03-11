@@ -9,9 +9,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::app::{AppState, ModalContent};
 use crate::data::model::{ContentBlock, Turn, UserContent};
 
-use super::conversation::{THINKING_ICON, extract_tag_content, tool_icon};
+use super::conversation::{THINKING_ICON, tool_icon};
 use super::layout::centered_rect;
 use super::md_wrap::markdown_wrap;
+use crate::data::classify::extract_tag_content;
 
 /// Extract the full text content for a modal based on modal type and current turn.
 fn extract_modal_text(turn: &Turn, modal: &ModalContent) -> String {
@@ -373,12 +374,7 @@ fn json_value_spans(value: &str) -> Vec<Span<'static>> {
             trimmed.to_string(),
             Style::default().fg(Color::Green),
         ));
-    } else if matches!(trimmed, "true" | "false" | "null") {
-        spans.push(Span::styled(
-            trimmed.to_string(),
-            Style::default().fg(Color::Yellow),
-        ));
-    } else if trimmed.parse::<f64>().is_ok() {
+    } else if matches!(trimmed, "true" | "false" | "null") || trimmed.parse::<f64>().is_ok() {
         spans.push(Span::styled(
             trimmed.to_string(),
             Style::default().fg(Color::Yellow),
@@ -757,7 +753,10 @@ mod tests {
     // --- JSON syntax highlighting tests ---
 
     fn span_texts<'a>(spans: &'a [Span<'a>]) -> Vec<(&'a str, Option<Color>)> {
-        spans.iter().map(|s| (s.content.as_ref(), s.style.fg)).collect()
+        spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style.fg))
+            .collect()
     }
 
     #[test]
@@ -765,32 +764,64 @@ mod tests {
         let spans = json_highlight_line(r#"  "name": "hello","#);
         let texts = span_texts(&spans);
         // indent, key, colon, value, comma
-        assert!(texts.iter().any(|(t, c)| *t == "\"name\"" && *c == Some(Color::Cyan)));
-        assert!(texts.iter().any(|(t, c)| *t == "\"hello\"" && *c == Some(Color::Green)));
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "\"name\"" && *c == Some(Color::Cyan))
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "\"hello\"" && *c == Some(Color::Green))
+        );
     }
 
     #[test]
     fn json_highlight_key_value_number() {
         let spans = json_highlight_line(r#"  "count": 42"#);
         let texts = span_texts(&spans);
-        assert!(texts.iter().any(|(t, c)| *t == "\"count\"" && *c == Some(Color::Cyan)));
-        assert!(texts.iter().any(|(t, c)| *t == "42" && *c == Some(Color::Yellow)));
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "\"count\"" && *c == Some(Color::Cyan))
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "42" && *c == Some(Color::Yellow))
+        );
     }
 
     #[test]
     fn json_highlight_key_value_bool() {
         let spans = json_highlight_line(r#"  "flag": true,"#);
         let texts = span_texts(&spans);
-        assert!(texts.iter().any(|(t, c)| *t == "\"flag\"" && *c == Some(Color::Cyan)));
-        assert!(texts.iter().any(|(t, c)| *t == "true" && *c == Some(Color::Yellow)));
-        assert!(texts.iter().any(|(t, c)| *t == "," && *c == Some(Color::DarkGray)));
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "\"flag\"" && *c == Some(Color::Cyan))
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "true" && *c == Some(Color::Yellow))
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "," && *c == Some(Color::DarkGray))
+        );
     }
 
     #[test]
     fn json_highlight_structural_brace() {
         let spans = json_highlight_line("  {");
         let texts = span_texts(&spans);
-        assert!(texts.iter().any(|(t, c)| *t == "{" && *c == Some(Color::DarkGray)));
+        assert!(
+            texts
+                .iter()
+                .any(|(t, c)| *t == "{" && *c == Some(Color::DarkGray))
+        );
     }
 
     #[test]

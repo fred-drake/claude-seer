@@ -6,6 +6,8 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
+use super::text_utils::truncate_to_width;
+
 /// A single line of content to be placed inside a chat bubble.
 ///
 /// Each line is composed of styled spans and a pre-computed display width.
@@ -56,28 +58,6 @@ pub fn markdown_wrap(
     let mut builder = MdWrapBuilder::new(max_cols, base_style, is_current_turn);
     builder.process(text);
     builder.finish()
-}
-
-/// Hard-truncate a string to `max_cols` display columns without word-wrapping.
-fn hard_truncate(text: &str, max_cols: usize) -> String {
-    let width = unicode_width::UnicodeWidthStr::width(text);
-    if width <= max_cols {
-        return text.to_string();
-    }
-    // Reserve 1 column for the ellipsis indicator.
-    let target = max_cols.saturating_sub(1);
-    let mut result = String::new();
-    let mut current_width: usize = 0;
-    for ch in text.chars() {
-        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if current_width + ch_w > target {
-            break;
-        }
-        result.push(ch);
-        current_width += ch_w;
-    }
-    result.push('\u{2026}'); // ellipsis
-    result
 }
 
 /// Single-pass builder that walks pulldown-cmark events and produces
@@ -137,21 +117,21 @@ impl MdWrapBuilder {
         style
     }
 
-    /// Style for inline code: White on DarkGray (current) or Gray on Black (non-current).
+    /// Style for inline code: White on DarkGray (current) or Gray with no bg (non-current).
     fn inline_code_style(&self) -> Style {
         if self.is_current_turn {
             self.current_style().fg(Color::White).bg(Color::DarkGray)
         } else {
-            self.current_style().fg(Color::Gray).bg(Color::Black)
+            self.current_style().fg(Color::Gray)
         }
     }
 
-    /// Style for code block text: White on DarkGray (current) or Gray on Black (non-current).
+    /// Style for code block text: White on DarkGray (current) or Gray with no bg (non-current).
     fn code_block_style(&self) -> Style {
         if self.is_current_turn {
             self.current_style().fg(Color::White).bg(Color::DarkGray)
         } else {
-            self.current_style().fg(Color::Gray).bg(Color::Black)
+            self.current_style().fg(Color::Gray)
         }
     }
 
@@ -349,7 +329,7 @@ impl MdWrapBuilder {
         let code_max = self.max_cols.saturating_sub(prefix_width);
 
         for raw_line in text.split('\n') {
-            let truncated = hard_truncate(raw_line, code_max);
+            let truncated = truncate_to_width(raw_line, code_max);
             let code_width = unicode_width::UnicodeWidthStr::width(truncated.as_str());
             self.current_spans
                 .push(Span::styled(prefix.to_string(), border_style));
@@ -712,7 +692,10 @@ mod tests {
             .find(|s| s.content.contains("foo()"))
             .expect("Should have a span containing 'foo()'");
         assert_eq!(code_span.style.fg, Some(Color::Gray));
-        assert_eq!(code_span.style.bg, Some(Color::Black));
+        assert_eq!(
+            code_span.style.bg, None,
+            "Non-current code should have no bg"
+        );
     }
 
     #[test]
@@ -755,7 +738,10 @@ mod tests {
             .find(|s| s.content.contains("let x"))
             .unwrap();
         assert_eq!(code_span.style.fg, Some(Color::Gray));
-        assert_eq!(code_span.style.bg, Some(Color::Black));
+        assert_eq!(
+            code_span.style.bg, None,
+            "Non-current code block should have no bg"
+        );
     }
 
     #[test]
@@ -898,15 +884,15 @@ mod tests {
     }
 
     #[test]
-    fn hard_truncate_appends_ellipsis_when_clipped() {
-        let truncated = hard_truncate("abcdefghij", 7);
+    fn truncate_to_width_appends_ellipsis_when_clipped() {
+        let truncated = truncate_to_width("abcdefghij", 7);
         assert_eq!(truncated, "abcdef\u{2026}");
         assert_eq!(unicode_width::UnicodeWidthStr::width(truncated.as_str()), 7);
     }
 
     #[test]
-    fn hard_truncate_no_ellipsis_when_fits() {
-        let result = hard_truncate("abcdef", 10);
+    fn truncate_to_width_no_ellipsis_when_fits() {
+        let result = truncate_to_width("abcdef", 10);
         assert_eq!(result, "abcdef");
     }
 }

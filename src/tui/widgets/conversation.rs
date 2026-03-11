@@ -9,12 +9,13 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, DisplayOptions};
+use crate::data::classify::{UserMessageKind, classify_user_text};
 use crate::data::model::{
     ContentBlock, Session, TokenUsage, ToolName, ToolResult, Turn, UserContent, format_tokens,
 };
 
 use super::md_wrap::{BubbleLine, markdown_wrap};
-use super::text_utils::truncate_end;
+use super::text_utils::{truncate_end, truncate_to_width};
 
 pub(crate) const TOOL_ICON_SUCCESS: &str = "◆";
 pub(crate) const TOOL_ICON_ERROR: &str = "✗";
@@ -383,9 +384,7 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                     .collect()
             }
         };
-        let has_content = bubble_lines
-            .iter()
-            .any(|bl| bl.display_width > 0);
+        let has_content = bubble_lines.iter().any(|bl| bl.display_width > 0);
         if has_content {
             lines.extend(make_bubble(
                 &bubble_lines,
@@ -526,125 +525,6 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
     }
 
     lines
-}
-
-/// Truncate a string to fit within `max_cols` display columns, appending "..."
-/// if it exceeds the limit.
-fn truncate_to_width(text: &str, max_cols: usize) -> String {
-    let width = UnicodeWidthStr::width(text);
-    if width <= max_cols {
-        return text.to_string();
-    }
-    // Need room for "..."
-    let target = max_cols.saturating_sub(3);
-    let mut result = String::new();
-    let mut current_width: usize = 0;
-    for ch in text.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if current_width + ch_width > target {
-            break;
-        }
-        result.push(ch);
-        current_width += ch_width;
-    }
-    result.push_str("...");
-    result
-}
-
-/// Classification of a user message based on its raw text content.
-#[derive(Debug, PartialEq)]
-enum UserMessageKind {
-    /// Normal user-typed message with cleaned text.
-    Normal(String),
-    /// System message (from local-command-caveat) with XML stripped.
-    System(String),
-    /// User command (e.g. /clear) with command name and optional args.
-    Command { command: String, args: String },
-    /// Task notification from a subagent.
-    TaskNotification {
-        task_id: String,
-        tool_use_id: String,
-        output_file: String,
-        status: String,
-        summary: String,
-        result: String,
-    },
-}
-
-/// Classify a raw user message text into Normal, System, or Command.
-///
-/// Commands are checked first because they also contain local-command-caveat tags.
-fn classify_user_text(raw: &str) -> UserMessageKind {
-    // Check for task notifications first.
-    if raw.contains("<task-notification>") {
-        return UserMessageKind::TaskNotification {
-            task_id: extract_tag_content(raw, "task-id")
-                .unwrap_or("")
-                .to_string(),
-            tool_use_id: extract_tag_content(raw, "tool-use-id")
-                .unwrap_or("")
-                .to_string(),
-            output_file: extract_tag_content(raw, "output-file")
-                .unwrap_or("")
-                .to_string(),
-            status: extract_tag_content(raw, "status")
-                .unwrap_or("unknown")
-                .to_string(),
-            summary: extract_tag_content(raw, "summary")
-                .unwrap_or("")
-                .to_string(),
-            result: extract_tag_content(raw, "result")
-                .unwrap_or("")
-                .trim()
-                .to_string(),
-        };
-    }
-
-    // Check for commands first -- they also contain local-command-caveat.
-    if let Some(cmd) = extract_tag_content(raw, "command-name") {
-        let args = extract_tag_content(raw, "command-args")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return UserMessageKind::Command {
-            command: cmd.to_string(),
-            args,
-        };
-    }
-
-    // Check for system messages.
-    if raw.contains("<local-command-caveat>") {
-        return UserMessageKind::System(strip_xml_tags(raw));
-    }
-
-    UserMessageKind::Normal(raw.to_string())
-}
-
-/// Strip all XML tags from the given text, returning only the plain content.
-fn strip_xml_tags(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut in_tag = false;
-    for ch in text.chars() {
-        if ch == '<' {
-            in_tag = true;
-        } else if ch == '>' {
-            in_tag = false;
-        } else if !in_tag {
-            result.push(ch);
-        }
-    }
-    // Collapse whitespace and trim.
-    let collapsed: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed
-}
-
-/// Extract the text content between the first occurrence of `<tag>` and `</tag>`.
-pub(crate) fn extract_tag_content<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = text.find(&open).map(|i| i + open.len())?;
-    let end = text[start..].find(&close).map(|i| start + i)?;
-    Some(&text[start..end])
 }
 
 /// Extract display text from user content.
@@ -1666,53 +1546,6 @@ mod tests {
         );
     }
 
-    // --- classify_user_text tests ---
-
-    #[test]
-    fn classify_normal_plain_text() {
-        let result = classify_user_text("hello world");
-        assert_eq!(result, UserMessageKind::Normal("hello world".to_string()));
-    }
-
-    #[test]
-    fn classify_system_message_from_local_command_caveat() {
-        let raw = "<local-command-caveat>Some system info about <b>local</b> commands</local-command-caveat>";
-        let result = classify_user_text(raw);
-        match result {
-            UserMessageKind::System(text) => {
-                assert!(!text.contains('<'), "Should strip XML tags: {text}");
-                assert!(text.contains("system info"), "Should keep content: {text}");
-            }
-            other => panic!("Expected System, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn classify_command_message() {
-        let raw = "<command-name>/clear</command-name><command-args></command-args><command-message>clear the conversation</command-message>";
-        let result = classify_user_text(raw);
-        match result {
-            UserMessageKind::Command { command, args } => {
-                assert_eq!(command, "/clear");
-                assert!(args.is_empty());
-            }
-            other => panic!("Expected Command, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn classify_command_with_args() {
-        let raw = "<command-name>/model</command-name><command-args>opus</command-args><command-message>switch model</command-message>";
-        let result = classify_user_text(raw);
-        match result {
-            UserMessageKind::Command { command, args } => {
-                assert_eq!(command, "/model");
-                assert_eq!(args, "opus");
-            }
-            other => panic!("Expected Command, got: {other:?}"),
-        }
-    }
-
     #[test]
     fn build_turn_lines_system_message_label() {
         let raw = "<local-command-caveat>You have permission to run local commands</local-command-caveat>";
@@ -1762,26 +1595,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_to_width_short_text_unchanged() {
-        assert_eq!(truncate_to_width("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_to_width_long_text_gets_ellipsis() {
-        let result = truncate_to_width("a]very long tool path here", 15);
-        assert!(result.ends_with("..."), "Should end with ...: {result}");
-        assert!(
-            UnicodeWidthStr::width(result.as_str()) <= 15,
-            "Should fit in 15 cols: {result}"
-        );
-    }
-
-    #[test]
-    fn truncate_to_width_exact_fit_unchanged() {
-        assert_eq!(truncate_to_width("12345", 5), "12345");
-    }
-
-    #[test]
     fn tool_use_line_truncated_to_content_width() {
         let long_path = "/a/".to_string() + &"x".repeat(200);
         let turn = make_turn(
@@ -1801,8 +1614,8 @@ mod tests {
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
         assert!(
-            text.contains("..."),
-            "Long tool path should be truncated: {text}"
+            text.contains('\u{2026}'),
+            "Long tool path should be truncated with ellipsis: {text}"
         );
     }
 
@@ -1861,30 +1674,6 @@ mod tests {
         // Tool-only turns should show Claude label and tools when enabled.
         assert!(text.contains("Claude:"), "Should show Claude label: {text}");
         assert!(text.contains("Read"), "Should show tool names: {text}");
-    }
-
-    #[test]
-    fn classify_task_notification() {
-        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content here</result>\n</task-notification>";
-        let result = classify_user_text(raw);
-        match result {
-            UserMessageKind::TaskNotification {
-                task_id,
-                tool_use_id,
-                output_file,
-                status,
-                summary,
-                result,
-            } => {
-                assert_eq!(task_id, "abc123");
-                assert_eq!(tool_use_id, "toolu_xyz");
-                assert_eq!(output_file, "/tmp/output");
-                assert_eq!(status, "completed");
-                assert_eq!(summary, "Agent completed task");
-                assert_eq!(result, "The result content here");
-            }
-            other => panic!("Expected TaskNotification, got: {other:?}"),
-        }
     }
 
     #[test]

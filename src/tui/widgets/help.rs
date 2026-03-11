@@ -51,29 +51,17 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
                 Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
                 Span::raw("Open project"),
             ]));
-            lines.push(Line::from(vec![
-                Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
-                Span::raw("Quit"),
-            ]));
         }
         View::SessionList => {
             lines.push(Line::from(vec![
                 Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
                 Span::raw("Open session"),
             ]));
-            lines.push(Line::from(vec![
-                Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
-                Span::raw("Back to projects"),
-            ]));
         }
         View::Conversation(_) => {
             lines.push(Line::from(vec![
                 Span::styled("  Down/Up    ", Style::default().fg(Color::Yellow)),
                 Span::raw("Scroll down / Scroll up"),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
-                Span::raw("Back to sessions"),
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -109,8 +97,8 @@ fn build_help_lines(view: &View) -> Vec<Line<'static>> {
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(vec![
-        Span::styled("  q          ", Style::default().fg(Color::Yellow)),
-        Span::raw("Quit"),
+        Span::styled("  q / Esc    ", Style::default().fg(Color::Yellow)),
+        Span::raw("Back"),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Ctrl-C     ", Style::default().fg(Color::Yellow)),
@@ -257,13 +245,10 @@ mod tests {
     }
 
     #[test]
-    fn conversation_help_shows_back_to_sessions() {
+    fn conversation_help_shows_back() {
         let view = View::Conversation(SessionId("test".to_string()));
         let text = help_text(&view);
-        assert!(
-            text.contains("Back to sessions"),
-            "Expected 'Back to sessions', got:\n{text}"
-        );
+        assert!(text.contains("Back"), "Expected 'Back', got:\n{text}");
     }
 
     #[test]
@@ -308,14 +293,15 @@ mod tests {
     }
 
     #[test]
-    fn all_views_show_quit_and_help() {
+    fn all_views_show_back_quit_and_help() {
         for view in [
             View::ProjectList,
             View::SessionList,
             View::Conversation(SessionId("t".to_string())),
         ] {
             let text = help_text(&view);
-            assert!(text.contains("Quit"), "Expected 'Quit' in {text}");
+            assert!(text.contains("Back"), "Expected 'Back' in {text}");
+            assert!(text.contains("Quit"), "Expected 'Quit' (Ctrl-C) in {text}");
             assert!(
                 text.contains("Toggle help"),
                 "Expected 'Toggle help' in {text}"
