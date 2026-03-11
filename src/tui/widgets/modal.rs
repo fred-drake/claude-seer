@@ -7,17 +7,25 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{AppState, ModalContent};
+use crate::data::classify::{UserMessageKind, classify_user_text, extract_tag_content};
 use crate::data::model::{ContentBlock, Turn, UserContent};
 
 use super::conversation::{THINKING_ICON, tool_icon};
 use super::layout::centered_rect;
 use super::md_wrap::markdown_wrap;
-use crate::data::classify::extract_tag_content;
 
 /// Extract the full text content for a modal based on modal type and current turn.
 fn extract_modal_text(turn: &Turn, modal: &ModalContent) -> String {
     match modal {
         ModalContent::User => match &turn.user_message.content {
+            // Teammate messages checked first — their content may mention
+            // `<task-notification>` as literal text.
+            UserContent::Text(text) if text.contains("<teammate-message") => {
+                match classify_user_text(text) {
+                    UserMessageKind::TeammateMessage { content, .. } => content,
+                    _ => text.trim().to_string(),
+                }
+            }
             UserContent::Text(text) if text.contains("<task-notification>") => {
                 let task_id = extract_tag_content(text, "task-id").unwrap_or("");
                 let tool_use_id = extract_tag_content(text, "tool-use-id").unwrap_or("");
@@ -205,34 +213,7 @@ fn build_claude_modal_lines(turn: &Turn, content_width: usize) -> Vec<Line<'stat
                 // Pretty-print JSON input with syntax highlighting.
                 let input_str = serde_json::to_string_pretty(&tc.input)
                     .unwrap_or_else(|_| tc.input.to_string());
-                for line in input_str.lines() {
-                    // Preserve leading indent, wrap the rest.
-                    let indent_len = line.len() - line.trim_start().len();
-                    let indent = &line[..indent_len];
-                    let body = &line[indent_len..];
-                    let wrap_width = content_width.saturating_sub(indent_len);
-                    if wrap_width == 0 || body.len() <= wrap_width {
-                        result.push(Line::from(json_highlight_line(line)));
-                    } else {
-                        // Detect the value color from the first line so
-                        // continuation lines keep the same highlight.
-                        let value_color = json_value_color(body);
-                        let wrapped = word_wrap_simple(body, wrap_width);
-                        for (i, segment) in wrapped.iter().enumerate() {
-                            if i == 0 {
-                                // First segment: full highlight with key.
-                                let indented = format!("{indent}{segment}");
-                                result.push(Line::from(json_highlight_line(&indented)));
-                            } else {
-                                // Continuation: indent + value color.
-                                result.push(Line::from(Span::styled(
-                                    format!("{indent}{segment}"),
-                                    Style::default().fg(value_color),
-                                )));
-                            }
-                        }
-                    }
-                }
+                render_json_lines(&input_str, content_width, &mut result);
 
                 // Tool result content.
                 if let Some(ref tool_result) = tc.result
@@ -291,6 +272,81 @@ fn build_task_modal_lines(text: &str, content_width: usize) -> Vec<Line<'static>
     }
 
     result
+}
+
+/// Render pretty-printed JSON lines, expanding `\n` in string values into
+/// properly highlighted continuation lines.
+///
+/// Each line from the pretty-printed JSON is highlighted via `json_highlight_line`.
+/// If a string value contains `\n`, the value is split and continuation lines are
+/// rendered in green (the string color) with additional indentation.
+fn render_json_lines(pretty: &str, content_width: usize, result: &mut Vec<Line<'static>>) {
+    let string_style = Style::default().fg(Color::Green);
+
+    for line in pretty.lines() {
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+
+        // Check if this line has a string value containing \n.
+        if trimmed.contains("\\n") {
+            let value_start = if let Some(colon_pos) = find_key_end(trimmed) {
+                Some(colon_pos + 2) // skip ": "
+            } else if trimmed.starts_with('"') {
+                Some(0) // standalone string in array
+            } else {
+                None
+            };
+
+            if let Some(vs) = value_start {
+                let value_part = &trimmed[vs..];
+                if value_part.starts_with('"') {
+                    // First line: render key + first segment with normal highlighting.
+                    let segments: Vec<&str> = value_part.split("\\n").collect();
+                    let first_line = format!("{indent}{}{}", &trimmed[..vs], segments[0]);
+                    render_json_line_wrapped(&first_line, content_width, result);
+
+                    // Continuation lines: render with green string color + extra indent.
+                    let cont_indent = format!("{indent}  ");
+                    for segment in &segments[1..] {
+                        let text = format!("{cont_indent}{segment}");
+                        for wrapped_line in word_wrap_simple(&text, content_width) {
+                            result.push(Line::from(Span::styled(wrapped_line, string_style)));
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
+        // Normal line (no \n expansion needed).
+        render_json_line_wrapped(line, content_width, result);
+    }
+}
+
+/// Render a single JSON line with highlighting and word-wrapping.
+fn render_json_line_wrapped(line: &str, content_width: usize, result: &mut Vec<Line<'static>>) {
+    let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    let body = &line[indent_len..];
+    let indent = &line[..indent_len];
+    let wrap_width = content_width.saturating_sub(indent_len);
+    if wrap_width == 0 || body.len() <= wrap_width {
+        result.push(Line::from(json_highlight_line(line)));
+    } else {
+        let value_color = json_value_color(body);
+        let wrapped = word_wrap_simple(body, wrap_width);
+        for (i, segment) in wrapped.iter().enumerate() {
+            if i == 0 {
+                let indented = format!("{indent}{segment}");
+                result.push(Line::from(json_highlight_line(&indented)));
+            } else {
+                result.push(Line::from(Span::styled(
+                    format!("{indent}{segment}"),
+                    Style::default().fg(value_color),
+                )));
+            }
+        }
+    }
 }
 
 /// Syntax-highlight a single line of pretty-printed JSON into styled spans.
@@ -438,14 +494,36 @@ pub fn render_modal(frame: &mut Frame, area: Rect, state: &AppState) {
         &turn.user_message.content,
         UserContent::Text(t) if t.contains("<task-notification>")
     );
-    let title = match modal {
-        ModalContent::User if is_tool_result => " Tool Result ",
-        ModalContent::User if is_task_notification => " Task Response ",
-        ModalContent::User => " User Message ",
-        ModalContent::Claude => " Claude Response ",
+    let teammate_info: Option<(String, String)> = match &turn.user_message.content {
+        UserContent::Text(t) if t.contains("<teammate-message") => match classify_user_text(t) {
+            UserMessageKind::TeammateMessage {
+                teammate_id, color, ..
+            } => Some((teammate_id, color)),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let title: String = match modal {
+        ModalContent::User if is_tool_result => " Tool Result ".to_string(),
+        ModalContent::User if teammate_info.is_some() => {
+            let (id, _) = teammate_info.as_ref().unwrap();
+            format!(" Teammate {id} ")
+        }
+        ModalContent::User if is_task_notification => " Task Response ".to_string(),
+        ModalContent::User => " User Message ".to_string(),
+        ModalContent::Claude => " Claude Response ".to_string(),
     };
 
     let border_color = match modal {
+        ModalContent::User if teammate_info.is_some() => {
+            let (_, color) = teammate_info.as_ref().unwrap();
+            if color.is_empty() {
+                Color::Cyan
+            } else {
+                super::conversation::color_from_name(color)
+            }
+        }
         ModalContent::User => Color::Cyan,
         ModalContent::Claude => Color::Magenta,
     };
@@ -463,6 +541,32 @@ pub fn render_modal(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let lines: Vec<Line<'static>> = if matches!(modal, ModalContent::Claude) {
         build_claude_modal_lines(turn, content_width)
+    } else if teammate_info.is_some() {
+        // Detect JSON content and pretty-print with syntax highlighting.
+        let trimmed = text.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                let pretty = serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| text.clone());
+                let mut result = Vec::new();
+                render_json_lines(&pretty, content_width, &mut result);
+                result
+            } else {
+                // Not valid JSON — render as markdown.
+                let base_style = Style::default().fg(Color::White);
+                let md_lines = markdown_wrap(&text, content_width, base_style, true);
+                md_lines
+                    .into_iter()
+                    .map(|bl| Line::from(bl.spans))
+                    .collect()
+            }
+        } else {
+            let base_style = Style::default().fg(Color::White);
+            let md_lines = markdown_wrap(&text, content_width, base_style, true);
+            md_lines
+                .into_iter()
+                .map(|bl| Line::from(bl.spans))
+                .collect()
+        }
     } else if is_task_notification {
         build_task_modal_lines(&text, content_width)
     } else {
@@ -750,6 +854,62 @@ mod tests {
         );
     }
 
+    // --- teammate message modal tests ---
+
+    #[test]
+    fn extract_teammate_message_returns_content_only() {
+        let raw = r#"<teammate-message teammate_id="architect" color="blue" summary="Review findings">## Architecture Review
+
+This is the review content.</teammate-message>"#;
+        let turn = make_user_turn(raw);
+        let text = extract_modal_text(&turn, &ModalContent::User);
+        assert!(
+            text.contains("## Architecture Review"),
+            "Should extract content body: {text}"
+        );
+        assert!(
+            text.contains("This is the review content."),
+            "Should include full content: {text}"
+        );
+        assert!(
+            !text.contains("teammate-message"),
+            "Should not contain XML tags: {text}"
+        );
+        assert!(
+            !text.contains("teammate_id"),
+            "Should not contain XML attributes: {text}"
+        );
+    }
+
+    #[test]
+    fn extract_teammate_message_empty_content() {
+        let raw =
+            r#"<teammate-message teammate_id="qa" color="red" summary="empty"></teammate-message>"#;
+        let turn = make_user_turn(raw);
+        let text = extract_modal_text(&turn, &ModalContent::User);
+        assert!(
+            text.is_empty(),
+            "Empty teammate body should yield empty text: {text}"
+        );
+    }
+
+    #[test]
+    fn extract_teammate_message_with_task_notification_in_content() {
+        // Teammate messages may mention <task-notification> as literal text.
+        // The teammate check must take priority over the task notification check.
+        let raw = r#"<teammate-message teammate_id="lead" color="blue" summary="Instructions">Add a test for <task-notification> priority ordering.</teammate-message>"#;
+        let turn = make_user_turn(raw);
+        let text = extract_modal_text(&turn, &ModalContent::User);
+        assert!(
+            text.contains("Add a test for"),
+            "Should extract teammate content, not parse as task notification: {text}"
+        );
+        assert!(
+            !text.contains("Task ID:"),
+            "Should NOT treat as task notification: {text}"
+        );
+    }
+
     // --- JSON syntax highlighting tests ---
 
     fn span_texts<'a>(spans: &'a [Span<'a>]) -> Vec<(&'a str, Option<Color>)> {
@@ -846,5 +1006,148 @@ mod tests {
     fn word_wrap_simple_empty() {
         let lines = word_wrap_simple("", 80);
         assert_eq!(lines, vec![""]);
+    }
+
+    // --- render_json_lines \n expansion tests ---
+
+    /// Helper: pretty-print JSON and render through `render_json_lines`, returning
+    /// the raw text content of each rendered Line.
+    fn render_json_to_texts(json: &serde_json::Value, width: usize) -> Vec<String> {
+        let pretty = serde_json::to_string_pretty(json).expect("test JSON should serialize");
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        render_json_lines(&pretty, width, &mut lines);
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_json_newline_basic_expansion() {
+        let json = serde_json::json!({"key": "line1\nline2"});
+        let texts = render_json_to_texts(&json, 120);
+        // First line: key + first segment
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("\"key\"") && t.contains("\"line1")),
+            "First line should have key and first segment: {texts:?}"
+        );
+        // Continuation: "line2" in green (standalone line)
+        assert!(
+            texts.iter().any(|t| t.trim().starts_with("line2")),
+            "Should have continuation line with 'line2': {texts:?}"
+        );
+    }
+
+    #[test]
+    fn render_json_newline_multiple() {
+        let json = serde_json::json!({"key": "a\nb\nc"});
+        let texts = render_json_to_texts(&json, 120);
+        // Should have continuation lines for b and c
+        let continuations: Vec<_> = texts
+            .iter()
+            .filter(|t| {
+                let trimmed = t.trim();
+                trimmed.starts_with('b') || trimmed.starts_with('c')
+            })
+            .collect();
+        assert!(
+            continuations.len() >= 2,
+            "Should have at least 2 continuation lines (b and c): {texts:?}"
+        );
+    }
+
+    #[test]
+    fn render_json_newline_at_start() {
+        let json = serde_json::json!({"key": "\nline2"});
+        let texts = render_json_to_texts(&json, 120);
+        // The first segment is empty (before \n), then "line2" as continuation
+        assert!(
+            texts.iter().any(|t| t.trim().starts_with("line2")),
+            "Should have 'line2' as continuation: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn render_json_newline_at_end() {
+        let json = serde_json::json!({"key": "line1\n"});
+        let texts = render_json_to_texts(&json, 120);
+        // Should have the key line with "line1", plus a continuation that is the
+        // closing quote (possibly empty/whitespace content).
+        assert!(
+            texts.iter().any(|t| t.contains("line1")),
+            "Should have 'line1' in output: {texts:?}"
+        );
+        // The total line count should be more than just {, key line, } — the \n
+        // should produce an extra continuation line.
+        assert!(
+            texts.len() >= 4,
+            "Should have at least 4 lines (open brace, key, continuation, close): {texts:?}"
+        );
+    }
+
+    #[test]
+    fn render_json_newline_in_array_string() {
+        let json = serde_json::json!(["line1\nline2"]);
+        let texts = render_json_to_texts(&json, 120);
+        assert!(
+            texts.iter().any(|t| t.contains("line1")),
+            "Should have 'line1': {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.trim().starts_with("line2")),
+            "Should have 'line2' as continuation: {texts:?}"
+        );
+    }
+
+    // --- build_task_modal_lines tests ---
+
+    #[test]
+    fn build_task_modal_lines_renders_header_and_body() {
+        let text = "Task ID: abc123\nStatus: completed\n\nThe detailed **result** content.";
+        let lines = build_task_modal_lines(text, 80);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        // Header properties should be present (yellow-styled).
+        assert!(
+            texts.iter().any(|t| t.contains("Task ID: abc123")),
+            "Should render header property: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Status: completed")),
+            "Should render status property: {texts:?}"
+        );
+        // Body content should be rendered (as markdown).
+        assert!(
+            texts.iter().any(|t| t.contains("result")),
+            "Should render markdown body content: {texts:?}"
+        );
+        // Verify header lines are yellow-styled.
+        let header_line = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.as_ref().contains("Task ID"))
+            })
+            .expect("Should have Task ID line");
+        assert_eq!(
+            header_line.spans[0].style.fg,
+            Some(Color::Yellow),
+            "Header should be yellow"
+        );
     }
 }

@@ -17,6 +17,21 @@ use crate::data::model::{
 use super::md_wrap::{BubbleLine, markdown_wrap};
 use super::text_utils::{truncate_end, truncate_to_width};
 
+/// Map a color name string to a ratatui Color.
+pub(crate) fn color_from_name(name: &str) -> Color {
+    match name.to_lowercase().as_str() {
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "white" => Color::White,
+        "gray" | "grey" => Color::Gray,
+        _ => Color::White, // default fallback — avoids collision with User label color
+    }
+}
+
 pub(crate) const TOOL_ICON_SUCCESS: &str = "◆";
 pub(crate) const TOOL_ICON_ERROR: &str = "✗";
 pub(crate) const TOOL_ICON_PENDING: &str = "◇";
@@ -274,12 +289,6 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
     let bw = bubble_width(ctx.width);
     // Content width = bubble_width minus 4 for "│ " prefix and " │" suffix.
     let content_width = bw.saturating_sub(4) as usize;
-    let use_alignment = ctx.width >= 50;
-    let padding_cols = if use_alignment {
-        ctx.width.saturating_sub(bw) as usize
-    } else {
-        0
-    };
 
     let user_border_color = Color::Cyan;
     let user_text_color = if ctx.is_current {
@@ -319,37 +328,45 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                 Some(UserMessageKind::TaskNotification { status, .. }) => {
                     (format!("Task Response ({status}):"), Color::Yellow)
                 }
+                Some(UserMessageKind::TeammateMessage {
+                    teammate_id, color, ..
+                }) => {
+                    let c = if color.is_empty() {
+                        Color::Cyan
+                    } else {
+                        color_from_name(color)
+                    };
+                    (format!("Teammate {teammate_id}:"), c)
+                }
                 _ => ("User:".to_string(), Color::Cyan),
             }
         };
 
-        let mut label_spans = Vec::new();
-        if padding_cols > 0 {
-            label_spans.push(Span::raw(" ".repeat(padding_cols)));
-        }
-        label_spans.push(Span::styled(
+        let is_teammate = matches!(&kind, Some(UserMessageKind::TeammateMessage { .. }));
+        lines.push(Line::from(Span::styled(
             label_text,
             Style::default()
                 .fg(label_color)
                 .add_modifier(Modifier::BOLD),
-        ));
-        lines.push(Line::from(label_spans));
+        )));
 
-        // Show task summary below label, before bubble.
-        if let Some(UserMessageKind::TaskNotification { summary, .. }) = &kind
-            && !summary.is_empty()
-        {
-            let mut summary_spans = Vec::new();
-            if padding_cols > 0 {
-                summary_spans.push(Span::raw(" ".repeat(padding_cols)));
+        // Show summary below label, before bubble (task notifications and teammate messages).
+        let summary_text = match &kind {
+            Some(UserMessageKind::TaskNotification { summary, .. }) if !summary.is_empty() => {
+                Some(summary.clone())
             }
-            summary_spans.push(Span::styled(
-                summary.clone(),
+            Some(UserMessageKind::TeammateMessage { summary, .. }) if !summary.is_empty() => {
+                Some(summary.clone())
+            }
+            _ => None,
+        };
+        if let Some(summary) = summary_text {
+            lines.push(Line::from(Span::styled(
+                summary,
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
-            ));
-            lines.push(Line::from(summary_spans));
+            )));
         }
 
         // Build bubble content based on message kind.
@@ -376,6 +393,9 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
             Some(UserMessageKind::TaskNotification { result, .. }) => {
                 markdown_wrap(result, content_width, text_style, ctx.is_current)
             }
+            Some(UserMessageKind::TeammateMessage { content, .. }) => {
+                markdown_wrap(content, content_width, text_style, ctx.is_current)
+            }
             _ => {
                 let wrapped = word_wrap(&user_text, content_width);
                 wrapped
@@ -386,12 +406,12 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
         };
         let has_content = bubble_lines.iter().any(|bl| bl.display_width > 0);
         if has_content {
-            lines.extend(make_bubble(
-                &bubble_lines,
-                user_border_color,
-                padding_cols,
-                content_width,
-            ));
+            let bubble_border = if is_teammate {
+                label_color
+            } else {
+                user_border_color
+            };
+            lines.extend(make_bubble(&bubble_lines, bubble_border, 0, content_width));
         }
     }
 
@@ -1130,21 +1150,20 @@ mod tests {
     // --- chat alignment ---
 
     #[test]
-    fn user_lines_have_leading_padding_at_width_80() {
+    fn user_lines_are_left_aligned() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
         let c = ctx(true, DisplayOptions::default(), &default_usage);
         let lines = build_turn_lines(&turn, &c);
-        // The user message line should have padding (right-aligned).
+        // The user message line should have no leading padding (left-aligned).
         let user_line = lines
             .iter()
             .find(|l| l.to_string().contains("hello"))
             .unwrap();
         let first_span = &user_line.spans[0];
-        // At width=80, bubble=60, padding = 20 spaces.
         assert!(
-            first_span.content.starts_with("                    "),
-            "Expected 20-char padding, got: '{}'",
+            !first_span.content.starts_with("                    "),
+            "User line should NOT have right-alignment padding, got: '{}'",
             first_span.content
         );
     }
@@ -1495,7 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn user_bubble_right_aligned_all_parts() {
+    fn user_bubble_left_aligned() {
         let turn = make_turn(0, "hello", vec![ContentBlock::Text("hi".to_string())]);
         let default_usage = TokenUsage::default();
         let c = ctx(true, DisplayOptions::default(), &default_usage);
@@ -1505,11 +1524,11 @@ mod tests {
             .iter()
             .find(|l| l.to_string().contains('╭'))
             .expect("Should have top border");
-        // First span should be the padding (20 chars at width=80, bubble=60).
+        // First span should be empty (no padding — left-aligned).
         assert_eq!(
             top_border.spans[0].content.len(),
-            20,
-            "Top border should have 20-char padding"
+            0,
+            "Top border should have no padding (left-aligned)"
         );
     }
 
@@ -1730,6 +1749,109 @@ mod tests {
         assert!(
             !text.contains("<status>"),
             "Should not show raw XML: {text}"
+        );
+    }
+
+    // --- color_from_name tests ---
+
+    #[test]
+    fn color_from_name_known_colors() {
+        assert_eq!(color_from_name("red"), Color::Red);
+        assert_eq!(color_from_name("green"), Color::Green);
+        assert_eq!(color_from_name("yellow"), Color::Yellow);
+        assert_eq!(color_from_name("blue"), Color::Blue);
+        assert_eq!(color_from_name("magenta"), Color::Magenta);
+        assert_eq!(color_from_name("cyan"), Color::Cyan);
+        assert_eq!(color_from_name("white"), Color::White);
+        assert_eq!(color_from_name("gray"), Color::Gray);
+        assert_eq!(color_from_name("grey"), Color::Gray);
+    }
+
+    #[test]
+    fn color_from_name_unknown_falls_back_to_white() {
+        assert_eq!(color_from_name("chartreuse"), Color::White);
+        assert_eq!(color_from_name(""), Color::White);
+        assert_eq!(color_from_name("purple"), Color::White);
+    }
+
+    #[test]
+    fn color_from_name_case_insensitive() {
+        assert_eq!(color_from_name("Blue"), Color::Blue);
+        assert_eq!(color_from_name("BLUE"), Color::Blue);
+        assert_eq!(color_from_name("Red"), Color::Red);
+        assert_eq!(color_from_name("GREEN"), Color::Green);
+    }
+
+    // --- teammate message rendering tests ---
+
+    #[test]
+    fn build_turn_lines_teammate_message_label() {
+        let raw = r#"<teammate-message teammate_id="architect" color="blue" summary="Review findings">Some review content</teammate-message>"#;
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("Teammate architect:"),
+            "Should show teammate label: {text}"
+        );
+        assert!(
+            !text.contains("User:"),
+            "Should NOT show User label: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_teammate_message_left_aligned() {
+        let raw = r#"<teammate-message teammate_id="qa" color="green" summary="">Content here</teammate-message>"#;
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(true, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        // Find the teammate label line.
+        let label_line = lines
+            .iter()
+            .find(|l| l.to_string().contains("Teammate qa:"))
+            .expect("Should have teammate label");
+        // First span should NOT be padding (teammate is left-aligned like assistant).
+        let first_span_content = label_line.spans[0].content.as_ref();
+        assert!(
+            !first_span_content.starts_with("                    "),
+            "Teammate label should NOT have right-alignment padding, got: '{first_span_content}'"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_teammate_message_shows_summary() {
+        let raw = r#"<teammate-message teammate_id="architect" color="blue" summary="Architecture review findings">Review content here</teammate-message>"#;
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("Architecture review findings"),
+            "Should show summary below label: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_teammate_message_shows_content_in_bubble() {
+        let raw = r#"<teammate-message teammate_id="qa" color="red" summary="">The actual review content</teammate-message>"#;
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("The actual review content"),
+            "Should show teammate content in bubble: {text}"
+        );
+        // Should be inside a bubble (has box-drawing borders).
+        assert!(
+            text.contains('╭'),
+            "Teammate content should be in a bubble: {text}"
         );
     }
 }
