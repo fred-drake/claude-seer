@@ -135,7 +135,8 @@ out or quit. Use `--path /custom/path` for non-standard installs.
   of what contributed to the context window
 - No compaction detection — token drops between turns are not flagged
 - No subagent/team visualization — subagent tool calls appear as regular
-  tool calls without tree structure
+  tool calls without tree structure (task notification results are rendered
+  cleanly with status, summary, and result content)
 - No SSH remote access — local `~/.claude/` only
 - No rich error diagnostics (miette) — basic error/warning messages
   appear in the status bar, but miette-style rich context (source

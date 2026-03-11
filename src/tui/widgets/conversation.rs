@@ -307,13 +307,18 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
             Some(classify_user_text(&user_text))
         };
 
-        let (label_text, label_color) = if is_tool_result {
-            ("Tool Result:", Color::Cyan)
+        let (label_text, label_color): (String, Color) = if is_tool_result {
+            ("Tool Result:".to_string(), Color::Cyan)
         } else {
             match &kind {
-                Some(UserMessageKind::System(_)) => ("System:", Color::Yellow),
-                Some(UserMessageKind::Command { .. }) => ("User Command:", Color::Magenta),
-                _ => ("User:", Color::Cyan),
+                Some(UserMessageKind::System(_)) => ("System:".to_string(), Color::Yellow),
+                Some(UserMessageKind::Command { .. }) => {
+                    ("User Command:".to_string(), Color::Magenta)
+                }
+                Some(UserMessageKind::TaskNotification { status, .. }) => {
+                    (format!("Task Response ({status}):"), Color::Yellow)
+                }
+                _ => ("User:".to_string(), Color::Cyan),
             }
         };
 
@@ -328,6 +333,23 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                 .add_modifier(Modifier::BOLD),
         ));
         lines.push(Line::from(label_spans));
+
+        // Show task summary below label, before bubble.
+        if let Some(UserMessageKind::TaskNotification { summary, .. }) = &kind
+            && !summary.is_empty()
+        {
+            let mut summary_spans = Vec::new();
+            if padding_cols > 0 {
+                summary_spans.push(Span::raw(" ".repeat(padding_cols)));
+            }
+            summary_spans.push(Span::styled(
+                summary.clone(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+            lines.push(Line::from(summary_spans));
+        }
 
         // Build bubble content based on message kind.
         let bubble_lines: Vec<BubbleLine> = match &kind {
@@ -350,6 +372,9 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                     .map(|text| BubbleLine::plain(text, Style::default().fg(Color::Magenta)))
                     .collect()
             }
+            Some(UserMessageKind::TaskNotification { result, .. }) => {
+                markdown_wrap(result, content_width, text_style, ctx.is_current)
+            }
             _ => {
                 let wrapped = word_wrap(&user_text, content_width);
                 wrapped
@@ -358,12 +383,17 @@ fn build_turn_lines(turn: &Turn, ctx: &TurnRenderContext) -> Vec<Line<'static>> 
                     .collect()
             }
         };
-        lines.extend(make_bubble(
-            &bubble_lines,
-            user_border_color,
-            padding_cols,
-            content_width,
-        ));
+        let has_content = bubble_lines
+            .iter()
+            .any(|bl| bl.display_width > 0);
+        if has_content {
+            lines.extend(make_bubble(
+                &bubble_lines,
+                user_border_color,
+                padding_cols,
+                content_width,
+            ));
+        }
     }
 
     // Assistant response.
@@ -530,12 +560,46 @@ enum UserMessageKind {
     System(String),
     /// User command (e.g. /clear) with command name and optional args.
     Command { command: String, args: String },
+    /// Task notification from a subagent.
+    TaskNotification {
+        task_id: String,
+        tool_use_id: String,
+        output_file: String,
+        status: String,
+        summary: String,
+        result: String,
+    },
 }
 
 /// Classify a raw user message text into Normal, System, or Command.
 ///
 /// Commands are checked first because they also contain local-command-caveat tags.
 fn classify_user_text(raw: &str) -> UserMessageKind {
+    // Check for task notifications first.
+    if raw.contains("<task-notification>") {
+        return UserMessageKind::TaskNotification {
+            task_id: extract_tag_content(raw, "task-id")
+                .unwrap_or("")
+                .to_string(),
+            tool_use_id: extract_tag_content(raw, "tool-use-id")
+                .unwrap_or("")
+                .to_string(),
+            output_file: extract_tag_content(raw, "output-file")
+                .unwrap_or("")
+                .to_string(),
+            status: extract_tag_content(raw, "status")
+                .unwrap_or("unknown")
+                .to_string(),
+            summary: extract_tag_content(raw, "summary")
+                .unwrap_or("")
+                .to_string(),
+            result: extract_tag_content(raw, "result")
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+        };
+    }
+
     // Check for commands first -- they also contain local-command-caveat.
     if let Some(cmd) = extract_tag_content(raw, "command-name") {
         let args = extract_tag_content(raw, "command-args")
@@ -575,7 +639,7 @@ fn strip_xml_tags(text: &str) -> String {
 }
 
 /// Extract the text content between the first occurrence of `<tag>` and `</tag>`.
-fn extract_tag_content<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+pub(crate) fn extract_tag_content<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = text.find(&open).map(|i| i + open.len())?;
@@ -1797,5 +1861,84 @@ mod tests {
         // Tool-only turns should show Claude label and tools when enabled.
         assert!(text.contains("Claude:"), "Should show Claude label: {text}");
         assert!(text.contains("Read"), "Should show tool names: {text}");
+    }
+
+    #[test]
+    fn classify_task_notification() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content here</result>\n</task-notification>";
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TaskNotification {
+                task_id,
+                tool_use_id,
+                output_file,
+                status,
+                summary,
+                result,
+            } => {
+                assert_eq!(task_id, "abc123");
+                assert_eq!(tool_use_id, "toolu_xyz");
+                assert_eq!(output_file, "/tmp/output");
+                assert_eq!(status, "completed");
+                assert_eq!(summary, "Agent completed task");
+                assert_eq!(result, "The result content here");
+            }
+            other => panic!("Expected TaskNotification, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_turn_lines_task_notification_label() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content</result>\n</task-notification>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("Task Response (completed):"),
+            "Should show task response label: {text}"
+        );
+        assert!(
+            !text.contains("User:"),
+            "Should NOT show User label: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_task_notification_shows_summary() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content</result>\n</task-notification>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("Agent completed task"),
+            "Should show summary: {text}"
+        );
+    }
+
+    #[test]
+    fn build_turn_lines_task_notification_shows_result_in_bubble() {
+        let raw = "<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_xyz</tool-use-id>\n<output-file>/tmp/output</output-file>\n<status>completed</status>\n<summary>Agent completed task</summary>\n<result>The result content</result>\n</task-notification>";
+        let turn = make_turn(0, raw, vec![ContentBlock::Text("ok".to_string())]);
+        let default_usage = TokenUsage::default();
+        let c = ctx(false, DisplayOptions::default(), &default_usage);
+        let lines = build_turn_lines(&turn, &c);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("The result content"),
+            "Should show result in bubble: {text}"
+        );
+        // Should NOT show raw XML tags.
+        assert!(
+            !text.contains("<task-id>"),
+            "Should not show raw XML: {text}"
+        );
+        assert!(
+            !text.contains("<status>"),
+            "Should not show raw XML: {text}"
+        );
     }
 }
