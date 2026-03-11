@@ -410,11 +410,7 @@ mod tests {
 
     /// Helper: collect all lines' text joined by newline.
     fn all_text(lines: &[BubbleLine]) -> String {
-        lines
-            .iter()
-            .map(line_text)
-            .collect::<Vec<_>>()
-            .join("\n")
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
     }
 
     #[test]
