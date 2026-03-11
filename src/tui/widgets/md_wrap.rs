@@ -412,7 +412,7 @@ mod tests {
     fn all_text(lines: &[BubbleLine]) -> String {
         lines
             .iter()
-            .map(|l| line_text(l))
+            .map(line_text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -755,7 +755,7 @@ mod tests {
             style,
             true,
         );
-        let texts: Vec<String> = result.iter().map(|l| line_text(l)).collect();
+        let texts: Vec<String> = result.iter().map(line_text).collect();
         // First line starts with bullet.
         assert!(
             texts[0].starts_with("\u{2022} "),
@@ -776,7 +776,7 @@ mod tests {
         let style = Style::default();
         let md = "- outer\n  - inner one\n  - inner two\n- outer again";
         let result = markdown_wrap(md, 60, style, true);
-        let texts: Vec<String> = result.iter().map(|l| line_text(l)).collect();
+        let texts: Vec<String> = result.iter().map(line_text).collect();
         // Inner items should be indented.
         let has_inner = texts.iter().any(|t| t.contains("inner one"));
         assert!(has_inner, "Should have inner list items: {texts:?}");
@@ -792,7 +792,7 @@ mod tests {
         let style = Style::default();
         let md = "```\nline one\nline two\nline three\n```";
         let result = markdown_wrap(md, 60, style, true);
-        let texts: Vec<String> = result.iter().map(|l| line_text(l)).collect();
+        let texts: Vec<String> = result.iter().map(line_text).collect();
         assert!(
             texts.iter().any(|t| t.contains("line one")),
             "Should have first code line: {texts:?}"
@@ -834,7 +834,7 @@ mod tests {
         let style = Style::default();
         let md = "```\nfirst\n\nlast\n```";
         let result = markdown_wrap(md, 60, style, true);
-        let texts: Vec<String> = result.iter().map(|l| line_text(l)).collect();
+        let texts: Vec<String> = result.iter().map(line_text).collect();
         assert!(
             texts.iter().any(|t| t.contains("first")),
             "Should have first line: {texts:?}"
@@ -860,7 +860,7 @@ mod tests {
         let style = Style::default();
         let md = "before\n\n```\ncode\n```\n\nafter";
         let result = markdown_wrap(md, 60, style, true);
-        let texts: Vec<String> = result.iter().map(|l| line_text(l)).collect();
+        let texts: Vec<String> = result.iter().map(line_text).collect();
         // Find the code line index.
         let code_idx = texts
             .iter()

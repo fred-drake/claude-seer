@@ -1608,8 +1608,10 @@ mod tests {
             })],
         );
         let default_usage = TokenUsage::default();
-        let mut opts = DisplayOptions::default();
-        opts.show_tools = true;
+        let opts = DisplayOptions {
+            show_tools: true,
+            ..DisplayOptions::default()
+        };
         let c = ctx(false, opts, &default_usage);
         let lines = build_turn_lines(&turn, &c);
         let text = lines_text(&lines);
