@@ -148,10 +148,11 @@ quit immediately. Use `--path /custom/path` for non-standard installs.
 
 **What changed:** The conversation view was redesigned from a flat,
 label-heavy layout to a modern chat-style display with enclosed chat
-bubbles using rounded box-drawing characters (`╭╮╰╯│─`). User bubbles
-are right-aligned with Cyan borders, Claude bubbles are left-aligned
-with Green borders. The clean default hides tool calls, thinking
-blocks, and token counts — showing only final text output.
+bubbles using rounded box-drawing characters (`╭╮╰╯│─`). All bubbles
+are left-aligned — User with Cyan borders, Claude with Magenta borders,
+and Teammate bubbles with the teammate's configured color. The clean
+default hides tool calls, thinking blocks, and token counts — showing
+only final text output.
 
 **Keybindings (updated):**
 - `q` / `Esc` — Navigate back (Conversation→SessionList→ProjectList→exit)
@@ -175,10 +176,16 @@ blocks, and token counts — showing only final text output.
   label in Yellow, summary line in DarkGray italic, result rendered as
   markdown in bubble; modal (`u` key) shows structured properties
   (Task ID, Tool Use ID, Output File, Status, Summary) before result
+- Teammate messages from agent teams shown with "Teammate {id}:" label
+  in the teammate's configured color, summary line in DarkGray italic,
+  content rendered as markdown in a left-aligned bubble (like assistant
+  messages). `color_from_name()` maps color strings to ratatui colors
+  with White as fallback for unknown colors
 - Tool use lines truncated with ellipsis `…` when exceeding bubble width
 
 **Classification module** (`data/classify.rs`):
-- `UserMessageKind` enum: Normal, System, Command, TaskNotification
+- `UserMessageKind` enum: Normal, System, Command, TaskNotification,
+  TeammateMessage
 - `classify_user_text()` — pure data classification from raw JSONL text
 - `extract_tag_content()` — XML tag extraction (forward-search, assumes
   content won't contain exact closing tag)
@@ -214,7 +221,15 @@ blocks, and token counts — showing only final text output.
   resize. Not urgent for typical sessions but needed for 100+ turn sessions.
 - `ModalContent` enum + `modal`/`modal_scroll` fields in `AppState`
 - `modal.rs` widget: centered overlay (~80% screen), word-wrapped,
-  scrollable content with colored borders (Cyan=user, Green=claude)
+  scrollable content with colored borders (Cyan=user, Magenta=claude,
+  teammate color for teammate messages)
+- Modal teammate message support: JSON content is auto-detected and
+  pretty-printed with syntax highlighting (keys=Cyan, strings=Green,
+  numbers/bools=Yellow, punctuation=DarkGray); non-JSON content
+  rendered as markdown
+- JSON `\n` expansion in modal views: string values containing literal
+  `\n` are expanded into continuation lines (green-styled, indented)
+  for readability in tool call inputs and teammate messages
 - Modal key routing in `map_key_to_action` via `modal_active` parameter
 
 ---
@@ -364,8 +379,12 @@ an async variant or wrapper.
 | Markdown rendering (pulldown-cmark) | Done | 0.1.1 |
 | User message classification | Done | 0.1.1 |
 | Task notification rendering | Done | 0.1.1 |
+| Teammate message rendering | Done | 0.1.1 |
 | q/Esc back-navigation | Done | 0.1.1 |
 | JSON syntax highlighting (modal) | Done | 0.1.1 |
+| Left-aligned bubbles (all roles) | Done | 0.1.1 |
+| Modal teammate message + JSON rendering | Done | 0.1.1 |
+| JSON \n expansion in modal views | Done | 0.1.1 |
 | Tool detail view | Planned | 0.2.0 |
 | Within-session search | Planned | 0.2.0 |
 | Token attribution (7 categories) | Planned | 0.3.0 |
@@ -513,7 +532,31 @@ relevant features are implemented.
   render frame. For sessions with 100+ turns, consider caching
   `Vec<BubbleLine>` per content block with invalidation on terminal
   resize or display option change.
+- **`extract_attribute` escaped quotes limitation**: The attribute
+  parser (`extract_attribute` in `classify.rs`) uses a simple
+  find-first-quote strategy. Attribute values containing escaped
+  quotes (e.g., `summary="Bob said \"hello\""`) will be truncated
+  at the first escaped quote. This is a known limitation; real
+  teammate messages are unlikely to have escaped quotes in
+  attributes.
+- **Teammate label simplification**: Currently shows
+  "Teammate architect:" — consider simplifying to "architect:" if
+  UX feedback confirms the "Teammate" prefix is redundant. Deferred
+  to UX feedback.
+- **Generalize `extract_teammate_body`**: If more attributed XML tag
+  types are added (beyond `<teammate-message>`), consider extracting
+  a reusable `extract_attributed_tag_body(text, tag_name)` helper
+  instead of per-tag-type functions.
 - **Non-current turn code styling**: After review, non-current
   inline code and code blocks now omit `bg(Color::Black)` to avoid
   jarring rectangles on non-black terminal backgrounds. Uses
   `fg(Color::Gray)` only, inheriting the terminal's native bg.
+- **`make_bubble` padding_cols parameter**: The `padding_cols`
+  parameter is now always passed as `0` (all bubbles left-aligned).
+  Consider removing the parameter entirely if right-alignment is
+  never reintroduced.
+- **JSON \n expansion edge cases**: The `render_json_lines` \n
+  expansion handles basic cases but does not distinguish between
+  `\n` in string values vs. keys (keys containing `\n` are unlikely
+  in practice). Continuation lines always render in green regardless
+  of surrounding context.

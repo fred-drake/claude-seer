@@ -13,6 +13,13 @@ pub enum UserMessageKind {
     System(String),
     /// User command (e.g. /clear) with command name and optional args.
     Command { command: String, args: String },
+    /// Teammate message from an agent team member.
+    TeammateMessage {
+        teammate_id: String,
+        color: String,
+        summary: String,
+        content: String,
+    },
     /// Task notification from a subagent.
     TaskNotification {
         task_id: String,
@@ -28,7 +35,29 @@ pub enum UserMessageKind {
 ///
 /// Commands are checked first because they also contain local-command-caveat tags.
 pub fn classify_user_text(raw: &str) -> UserMessageKind {
-    // Check for task notifications first.
+    // Check for teammate messages first.
+    if raw.contains("<teammate-message") {
+        // Extract attributes from opening tag.
+        let teammate_id = extract_attribute(raw, "teammate-message", "teammate_id")
+            .unwrap_or_default()
+            .to_string();
+        let color = extract_attribute(raw, "teammate-message", "color")
+            .unwrap_or_default()
+            .to_string();
+        let summary = extract_attribute(raw, "teammate-message", "summary")
+            .unwrap_or_default()
+            .to_string();
+        // Content is the body between opening and closing tags.
+        let content = extract_teammate_body(raw).unwrap_or_default().to_string();
+        return UserMessageKind::TeammateMessage {
+            teammate_id,
+            color,
+            summary,
+            content,
+        };
+    }
+
+    // Check for task notifications.
     if raw.contains("<task-notification>") {
         return UserMessageKind::TaskNotification {
             task_id: extract_tag_content(raw, "task-id")
@@ -88,6 +117,32 @@ pub fn strip_xml_tags(text: &str) -> String {
     }
     // Collapse whitespace and trim.
     result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Extract an attribute value from an XML-like opening tag.
+///
+/// For example, given `<teammate-message teammate_id="architect" color="blue">`,
+/// `extract_attribute(text, "teammate-message", "teammate_id")` returns `Some("architect")`.
+fn extract_attribute<'a>(text: &'a str, tag: &str, attr: &str) -> Option<&'a str> {
+    let open_start = text.find(&format!("<{tag}"))?;
+    let tag_end = text[open_start..].find('>')? + open_start;
+    let tag_str = &text[open_start..tag_end];
+    let attr_pattern = format!("{attr}=\"");
+    let attr_start = tag_str.find(&attr_pattern)? + attr_pattern.len();
+    let attr_end = tag_str[attr_start..].find('"')? + attr_start;
+    Some(&tag_str[attr_start..attr_end])
+}
+
+/// Extract the body content of a `<teammate-message ...>...</teammate-message>` tag.
+fn extract_teammate_body(text: &str) -> Option<&str> {
+    let open_start = text.find("<teammate-message")?;
+    let body_start = text[open_start..].find('>')? + open_start + 1;
+    let body_end = text.find("</teammate-message>")?;
+    if body_start >= body_end {
+        return None;
+    }
+    let body = text[body_start..body_end].trim();
+    if body.is_empty() { None } else { Some(body) }
 }
 
 /// Extract the text content between the first occurrence of `<tag>` and `</tag>`.
@@ -226,6 +281,67 @@ mod tests {
         }
     }
 
+    // --- classify_user_text teammate message tests ---
+
+    #[test]
+    fn classify_teammate_message() {
+        let raw = r#"<teammate-message teammate_id="architect" color="blue" summary="Architecture review findings for 4 commits">
+## Code Architecture Review — 4 Unpushed Commits
+
+### Finding 1: MAJOR — `classify_user_text` belongs in `data/`
+
+This is domain logic.
+</teammate-message>"#;
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TeammateMessage {
+                teammate_id,
+                color,
+                summary,
+                content,
+            } => {
+                assert_eq!(teammate_id, "architect");
+                assert_eq!(color, "blue");
+                assert_eq!(summary, "Architecture review findings for 4 commits");
+                assert!(content.contains("## Code Architecture Review"));
+                assert!(content.contains("This is domain logic."));
+            }
+            other => panic!("Expected TeammateMessage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_teammate_message_missing_attributes() {
+        let raw = r#"<teammate-message teammate_id="qa">Some content</teammate-message>"#;
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TeammateMessage {
+                teammate_id,
+                color,
+                summary,
+                content,
+            } => {
+                assert_eq!(teammate_id, "qa");
+                assert!(color.is_empty());
+                assert!(summary.is_empty());
+                assert_eq!(content, "Some content");
+            }
+            other => panic!("Expected TeammateMessage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_teammate_message_empty_body() {
+        let raw = r#"<teammate-message teammate_id="test" color="red" summary="empty"></teammate-message>"#;
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TeammateMessage { content, .. } => {
+                assert!(content.is_empty());
+            }
+            other => panic!("Expected TeammateMessage, got: {other:?}"),
+        }
+    }
+
     // --- extract_tag_content tests ---
 
     #[test]
@@ -253,5 +369,79 @@ mod tests {
     fn extract_tag_content_missing_close_tag() {
         let text = "<result>some content without close";
         assert_eq!(extract_tag_content(text, "result"), None);
+    }
+
+    // --- Issue #5: Teammate message edge case tests ---
+
+    #[test]
+    fn classify_teammate_message_attribute_reorder() {
+        // Attributes in different order: color before teammate_id.
+        let raw = r#"<teammate-message color="green" teammate_id="qa" summary="test">body</teammate-message>"#;
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TeammateMessage {
+                teammate_id,
+                color,
+                summary,
+                content,
+            } => {
+                assert_eq!(teammate_id, "qa");
+                assert_eq!(color, "green");
+                assert_eq!(summary, "test");
+                assert_eq!(content, "body");
+            }
+            other => panic!("Expected TeammateMessage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_teammate_message_escaped_quotes_truncates() {
+        // Known limitation: extract_attribute stops at first `"` after attr="
+        // so escaped quotes in values like summary="Bob said \"hello\"" will
+        // truncate at the backslash-quote.
+        let raw = r#"<teammate-message teammate_id="qa" summary="Bob said \"hello\"">body</teammate-message>"#;
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TeammateMessage { summary, .. } => {
+                // The parser finds the first closing `"` after summary=", which is
+                // the backslash-escaped quote. It truncates there.
+                assert_eq!(summary, r"Bob said \");
+            }
+            other => panic!("Expected TeammateMessage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_teammate_message_missing_closing_tag() {
+        // Missing </teammate-message> — body extraction returns None → empty content.
+        let raw =
+            r#"<teammate-message teammate_id="qa" color="blue" summary="test">unclosed content"#;
+        let result = classify_user_text(raw);
+        match result {
+            UserMessageKind::TeammateMessage {
+                teammate_id,
+                content,
+                ..
+            } => {
+                assert_eq!(teammate_id, "qa");
+                assert!(
+                    content.is_empty(),
+                    "Content should be empty without closing tag: {content}"
+                );
+            }
+            other => panic!("Expected TeammateMessage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_teammate_message_takes_priority_over_task_notification() {
+        // A message containing both <teammate-message and <task-notification>
+        // should be classified as TeammateMessage (checked first).
+        let raw = r#"<teammate-message teammate_id="qa" color="blue" summary="test"><task-notification>inner</task-notification></teammate-message>"#;
+        let result = classify_user_text(raw);
+        assert!(
+            matches!(result, UserMessageKind::TeammateMessage { .. }),
+            "Should be TeammateMessage, not TaskNotification: {result:?}"
+        );
     }
 }
